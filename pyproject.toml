@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mihomo-controller"
+version = "0.0.1"
+description = "A controller for Mihomo"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "Moha-Master", email = "hongkongreporter@outlook.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+# 项目依赖
+dependencies = [
+    "requests",
+    "requests_unixsocket",
+    "InquirerPy"
+]
+
+# 命令行入口
+[project.scripts]
+mihomo-controller = "mihomo_controller.cli:main"
+
+# (可选) 项目链接
+[project.urls]
+"Homepage" = "https://github.com/Moha-Master/Mihomo-Controller"
+"Bug Tracker" = "https://github.com/Moha-Master/Mihomo-Controller/issues"
