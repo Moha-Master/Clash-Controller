@@ -8,6 +8,7 @@ from datetime import datetime
 from InquirerPy import inquirer
 from InquirerPy.validator import EmptyInputValidator
 from InquirerPy.base.control import Choice, Separator
+import requests # Need to import for requests.exceptions.RequestException
 
 from .api import MihomoAPI
 
@@ -58,6 +59,57 @@ def _stream_fetcher(api_method, data_queue, stop_event):
     finally:
         # Signal that this stream has ended, e.g., for error display
         data_queue.put(None) 
+
+def show_connections_page(api: MihomoAPI):
+    """Displays active connections, refreshing periodically."""
+    try:
+        while True:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("Active Connections (Press Ctrl+C to return)")
+            print("-" * 80)
+            
+            connections_data = api.get_connections()
+            if connections_data and 'connections' in connections_data:
+                connections = connections_data['connections']
+                total_dl = connections_data.get('downloadTotal', 0) / (1024*1024)
+                total_ul = connections_data.get('uploadTotal', 0) / (1024*1024)
+
+                print(f"Total Connections: {len(connections)} | Total UL/DL: {total_ul:.2f}MB / {total_dl:.2f}MB")
+                print("-" * 80)
+                
+                # Header
+                print(f"{'Host':<30} {'Network':<7} {'Type':<10} {'Rule':<12} {'Chains'}")
+                print(f"{'-'*30:<30} {'-'*7:<7} {'-'*10:<10} {'-'*12:<12} {'-'*15}")
+
+                # Display first 20 connections to avoid clutter
+                for conn in connections[:20]:
+                    metadata = conn.get('metadata', {})
+                    host = metadata.get('host') or metadata.get('destinationIP', 'N/A')
+                    network = metadata.get('network', 'N/A')
+                    conn_type = metadata.get('type', 'N/A')
+                    rule = conn.get('rule', 'N/A')
+                    chains = " -> ".join(conn.get('chains', []))
+                    
+                    # Truncate long hostnames
+                    if len(host) > 28:
+                        host = host[:25] + "..."
+
+                    print(f"{host:<30} {network:<7} {conn_type:<10} {rule:<12} {chains}")
+
+                if len(connections) > 20:
+                    print(f"\n... and {len(connections) - 20} more connections.")
+
+            else:
+                print("Could not retrieve connections or no active connections.")
+
+            print("-" * 80)
+            print(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            time.sleep(1) # Refresh interval
+            
+    except KeyboardInterrupt:
+        print("\nReturning to main menu...")
+        time.sleep(0.5)
 
 def show_overview_page(api: MihomoAPI):
     """Displays the overview page with real-time stats using streaming."""
@@ -257,6 +309,7 @@ def show_main_menu(api: MihomoAPI):
                 message="Main Menu",
                 choices=[
                     Choice(name="Overview", value="overview"),
+                    Choice(name="Connections", value="connections"),
                     Choice(name="Settings", value="settings"),
                     Choice(name="Exit", value="exit")
                 ],
@@ -265,10 +318,15 @@ def show_main_menu(api: MihomoAPI):
 
             if action == "overview":
                 show_overview_page(api)
+            elif action == "connections":
+                show_connections_page(api)
             elif action == "settings":
                 result = show_settings_menu(api)
                 if result == "switch_endpoint":
-                    return "switch_endpoint"
+                    print("\nReturning to endpoint selection...")
+                    continue
+                else:
+                    break
             elif action == "exit":
                 print("Exiting...")
                 return "exit"
