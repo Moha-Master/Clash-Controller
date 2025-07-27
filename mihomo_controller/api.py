@@ -1,9 +1,8 @@
 import requests
 from urllib.parse import quote
-import json
 
 class MihomoAPI:
-    def __init__(self, base_url, secret=None, timeout=5):
+    def __init__(self, base_url, secret=None, timeout=5, working_directory=None):
         """
         Initializes the Mihomo API client.
 
@@ -11,10 +10,12 @@ class MihomoAPI:
                          (e.g., http://127.0.0.1:9090 or unix:///path/to/socket)
         :param secret: The secret for API authentication.
         :param timeout: Request timeout in seconds.
+        :param working_directory: The working directory of the Mihomo core, used for config paths.
         """
         self.base_url = base_url
         self.timeout = timeout
         self.headers = {}
+        self.working_directory = working_directory
         if secret:
             self.headers['Authorization'] = f'Bearer {secret}'
 
@@ -39,16 +40,14 @@ class MihomoAPI:
                 timeout=self.timeout,
                 stream=stream
             )
-            response.raise_for_status()
-            
-            if stream:
-                return response
-                
-            if response.content:
-                return response.json()
-            return None
-        except requests.exceptions.RequestException:
-            return None
+            response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+            # For successful responses, return JSON if content exists, otherwise return a success indicator
+            if response.status_code == 204 or not response.content:
+                return {"status": "success"}, None
+            return response.json(), None
+        except requests.exceptions.RequestException as e:
+            return None, str(e)
 
     # === Real-time Data ===
     def get_logs_stream(self):
@@ -74,7 +73,7 @@ class MihomoAPI:
 
     def restart(self, path="", payload=""):
         """Restart Mihomo core."""
-        return self._request('POST', '/restart', json_data={"path": path, "payload": payload})
+        return self._request('POST', '/restart', json_data={"path": path, "payload": payload} or {})
 
     # === Configs ===
     def get_configs(self):
@@ -87,7 +86,7 @@ class MihomoAPI:
 
     def reload_configs(self, path="", payload=""):
         """Reload configuration from path."""
-        return self._request('PUT', '/configs', params={'force': 'true'}, json_data={"path": path, "payload": payload})
+        return self._request('PUT', '/configs', params={'force': 'true'}, json_data={"path": path, "payload": payload} or {})
     
     def set_mode(self, mode: str):
         """Sets the connection mode ('rule', 'global', 'direct')."""
