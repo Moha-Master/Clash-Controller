@@ -3,21 +3,19 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mihomo-controller"
+name = "clash_controller"
 version = "0.0.1"
-description = "A controller for Mihomo"
+description = "A controller for Clash"
 readme = "README.md"
 requires-python = ">=3.8"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
   { name = "Moha-Master", email = "hongkongreporter@outlook.com" },
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-# 项目依赖
 dependencies = [
     "requests",
     "requests_unixsocket",
@@ -26,9 +24,10 @@ dependencies = [
 
 # 命令行入口
 [project.scripts]
-mihomo-controller = "mihomo_controller.cli:main"
+clashctl = "clash_controller.cli:main"
 
 # (可选) 项目链接
 [project.urls]
-"Homepage" = "https://github.com/Moha-Master/Mihomo-Controller"
-"Bug Tracker" = "https://github.com/Moha-Master/Mihomo-Controller/issues"
+Homepage = "https://github.com/Moha-Master/Clash-Controller"
+Repository = "https://github.com/Moha-Master/Clash-Controller"
+Issues = "https://github.com/Moha-Master/Clash-Controller/issues"

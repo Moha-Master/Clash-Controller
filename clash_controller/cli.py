@@ -12,7 +12,7 @@ import os.path
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
-from .api import MihomoAPI
+from .api import ClashAPI
 
 # ANSI Color Codes
 COLOR_GREEN = '\033[92m'
@@ -21,9 +21,9 @@ COLOR_RED = '\033[91m'
 COLOR_RESET = '\033[0m'
 
 # Path for storing connection profiles in the user's home directory
-PROFILE_PATH = os.path.expanduser("~/.config/mihomo-controller/profiles.json")
-CONFIG_PROVIDERS_PATH = os.path.expanduser("~/.config/mihomo-controller/config_providers.json")
-TEMP_CONFIG_DIR = os.path.expanduser("~/.config/mihomo-controller/temp_configs")
+PROFILE_PATH = os.path.expanduser("~/.config/clash-controller/profiles.json")
+CONFIG_PROVIDERS_PATH = os.path.expanduser("~/.config/clash-controller/config_providers.json")
+TEMP_CONFIG_DIR = os.path.expanduser("~/.config/clash-controller/temp_configs")
 
 def get_remote_last_modified(url: str) -> datetime or None:
     """Fetches the Last-Modified header from a remote URL."""
@@ -40,7 +40,7 @@ def get_remote_last_modified(url: str) -> datetime or None:
 # Global list to store application logs
 app_logs = []
 
-def is_local_api(api: MihomoAPI) -> bool:
+def is_local_api(api: ClashAPI) -> bool:
     """Checks if the API base URL points to a local address."""
     if not api or not api.base_url:
         return False
@@ -150,7 +150,7 @@ def _stream_fetcher(api_method, data_queue, stop_event):
         # Signal that this stream has ended, e.g., for error display
         data_queue.put(None) 
 
-def show_connections_page(api: MihomoAPI):
+def show_connections_page(api: ClashAPI):
     """Displays active connections, refreshing periodically."""
     try:
         while True:
@@ -207,7 +207,7 @@ def show_connections_page(api: MihomoAPI):
         print("\nReturning to main menu...")
         time.sleep(0.5)
 
-def show_overview_page(api: MihomoAPI):
+def show_overview_page(api: ClashAPI):
     """Displays the overview page with real-time stats using streaming."""
     version_info, error = api.get_version()
     version = version_info.get('version', 'N/A') if version_info else 'N/A'
@@ -257,7 +257,7 @@ def show_overview_page(api: MihomoAPI):
 
             # --- Render UI ---
             os.system('cls' if os.name == 'nt' else 'clear')
-            print("Mihomo Overview (Press Ctrl+C to go back to Main Menu)")
+            print("Clash Overview (Press Ctrl+C to go back to Main Menu)")
             print("-" * 50)
             print(f"  Version: {version}")
             print("-" * 50)
@@ -293,11 +293,11 @@ def show_overview_page(api: MihomoAPI):
         print("\nReturning to main menu...")
         time.sleep(0.5) # Give a moment for the message to be seen
 
-def show_config_menu(api: MihomoAPI):
+def show_config_menu(api: ClashAPI):
     """Displays the configuration sub-menu and handles user actions."""
     if not is_local_api(api):
-        print(f"{COLOR_RED}\nConfiguration management is only available for local Mihomo instances (e.g., 127.0.0.1, localhost).{COLOR_RESET}")
-        add_log("Attempted to access Configuration menu on a remote Mihomo instance.")
+        print(f"{COLOR_RED}\nConfiguration management is only available for local Clash instances (e.g., 127.0.0.1, localhost).{COLOR_RESET}")
+        add_log("Attempted to access Configuration menu on a remote Clash instance.")
         input("Press Enter to return to the main menu...")
         return None
 
@@ -361,8 +361,8 @@ def show_config_menu(api: MihomoAPI):
                 # Use the working_directory from the active API instance
                 download_path = api.working_directory
                 if not download_path:
-                    print("Error: Mihomo working directory not set for the current profile. Please set it in the main menu.")
-                    add_log("Error: Mihomo working directory not set for the current profile.")
+                    print("Error: Clash working directory not set for the current profile. Please set it in the main menu.")
+                    add_log("Error: Clash working directory not set for the current profile.")
                     input("Press Enter to continue...")
                     continue
 
@@ -439,21 +439,21 @@ def show_config_menu(api: MihomoAPI):
                         print("\n--- IMPORTANT ---")
                         print("The config was saved to a temporary location due to permissions:")
                         print(f"  {config_full_path}")
-                        print(f"Please manually move it to your intended Mihomo working directory: {os.path.join(download_path, config_file_name)}")
-                        print("You might need to use 'sudo' for this, e.g.:")
+                        print(f"Please manually move it to your intended Clash working directory: {os.path.join(download_path, config_file_name)}")
+                        print("You might need to use 'sudo' for this, e.g.:\n")
                         print(f"sudo mv {config_full_path} {os.path.join(download_path, config_file_name)}")
                         print("After moving, you can reload the config via the 'Reload Config File (Local)' option in this menu.")
                         add_log("Config saved to temporary location due to permissions. User instructed to move manually.")
                     else:
                         # Reload config via API only if saved to the intended location
-                        print("Reloading config file via Mihomo API...")
+                        print("Reloading config file via Clash API...")
                         _, error = api.reload_configs(path=config_full_path)
                         if not error:
-                            print("Successfully reloaded config file via Mihomo API.")
-                            add_log("Successfully reloaded config file via Mihomo API.")
+                            print("Successfully reloaded config file via Clash API.")
+                            add_log("Successfully reloaded config file via Clash API.")
                         else:
-                            print(f"Failed to reload config file via Mihomo API: {error}")
-                            add_log(f"Failed to reload config file via Mihomo API: {error}")
+                            print(f"Failed to reload config file via Clash API: {error}")
+                            add_log(f"Failed to reload config file via Clash API: {error}")
 
                 except requests.exceptions.RequestException as e:
                     print(f"Error fetching config: {e}")
@@ -470,7 +470,7 @@ def show_config_menu(api: MihomoAPI):
             add_log("Configuration menu exited by user (KeyboardInterrupt).")
             return None
 
-def show_settings_menu(api: MihomoAPI):
+def show_settings_menu(api: ClashAPI):
 
     """Displays the settings sub-menu and handles user actions."""
     while True:
@@ -493,7 +493,7 @@ def show_settings_menu(api: MihomoAPI):
                     Separator(),
                     # Section 2: Reload & Restart
                     Choice(name="Reload GEO Databases", value="reload_geo"),
-                    Choice(name="Restart Mihomo Core", value="restart"),
+                    Choice(name="Restart Clash Core", value="restart"),
                     Separator(),
                     # Section 3: Upgrade
                     Choice(name="Upgrade Kernel", value="upgrade_kernel"),
@@ -543,14 +543,14 @@ def show_settings_menu(api: MihomoAPI):
                     print(f"Failed to request GEO databases reload: {error}")
                     add_log(f"Failed to request GEO databases reload: {error}")
             elif action == "restart":
-                print("\nRestarting Mihomo Core...")
+                print("\nRestarting Clash Core...")
                 _, error = api.restart()
                 if not error:
-                    print("Successfully restarted Mihomo Core.")
-                    add_log("Successfully restarted Mihomo Core.")
+                    print("Successfully restarted Clash Core.")
+                    add_log("Successfully restarted Clash Core.")
                 else:
-                    print(f"Failed to restart Mihomo Core: {error}")
-                    add_log(f"Failed to restart Mihomo Core: {error}")
+                    print(f"Failed to restart Clash Core: {error}")
+                    add_log(f"Failed to restart Clash Core: {error}")
             elif action == "upgrade_kernel":
                 print("\nRequesting Kernel upgrade...")
                 _, error = api.upgrade_kernel()
@@ -588,7 +588,7 @@ def show_settings_menu(api: MihomoAPI):
             add_log("Settings menu exited by user (KeyboardInterrupt).")
             return None
 
-def show_main_menu(api: MihomoAPI):
+def show_main_menu(api: ClashAPI):
     """Displays the main menu and handles user actions."""
     version_info, error = api.get_version()
     version = version_info.get('version', 'unknown') if version_info else 'unknown'
@@ -596,8 +596,8 @@ def show_main_menu(api: MihomoAPI):
         add_log(f"Error fetching version for main menu: {error}")
         version = f"N/A (Error: {error})"
 
-    print(f"\nSuccessfully connected to Mihomo (version: {version})!")
-    add_log(f"Successfully connected to Mihomo (version: {version}).")
+    print(f"\nSuccessfully connected to Clash (version: {version})!")
+    add_log(f"Successfully connected to Clash (version: {version}).")
 
     while True:
         try:
@@ -658,7 +658,7 @@ def main():
 
         try:
             selected_profile = inquirer.select(
-                message="Select a Mihomo connection profile:",
+                message="Select a Clash connection profile:",
                 choices=profile_choices,
                 default=None,
             ).execute()
@@ -675,7 +675,7 @@ def main():
         if selected_profile == "new":
             try:
                 url = inquirer.text(
-                    message="Enter Mihomo controller URL (e.g., http://127.0.0.1:9090):", 
+                    message="Enter Clash controller URL (e.g., http://127.0.0.1:9090):", 
                     validate=EmptyInputValidator()
                 ).execute()
                 secret = inquirer.text(message="Enter API secret (optional):").execute()
@@ -685,8 +685,8 @@ def main():
                     validate=EmptyInputValidator()
                 ).execute()
                 working_directory = inquirer.text(
-                    message="Enter Mihomo working directory (e.g., ~/.config/mihomo):",
-                    default=os.path.expanduser("~/.config/mihomo"),
+                    message="Enter Clash working directory (e.g., ~/.config/clash):",
+                    default=os.path.expanduser("~/.config/clash"),
                     validate=EmptyInputValidator()
                 ).execute()
             except KeyboardInterrupt:
@@ -699,7 +699,7 @@ def main():
             save_profiles(profiles)
             add_log(f"New profile '{profile_name}' added.")
             
-            api = MihomoAPI(base_url=url, secret=secret, working_directory=working_directory)
+            api = ClashAPI(base_url=url, secret=secret, working_directory=working_directory)
         elif selected_profile:
             # Find the actual profile object in the profiles list
             current_profile_obj = None
@@ -714,8 +714,8 @@ def main():
                     print(f"\nProfile '{current_profile_obj['name']}' is missing a working directory.")
                     try:
                         working_directory = inquirer.text(
-                            message="Enter Mihomo working directory for this profile (e.g., ~/.config/mihomo):",
-                            default=os.path.expanduser("~/.config/mihomo"),
+                            message="Enter Clash working directory for this profile (e.g., ~/.config/clash):",
+                            default=os.path.expanduser("~/.config/clash"),
                             validate=EmptyInputValidator()
                         ).execute()
                         current_profile_obj['working_directory'] = working_directory
@@ -726,7 +726,7 @@ def main():
                         add_log("Working directory prompt cancelled by user (KeyboardInterrupt).")
                         continue # Return to profile selection instead of breaking
 
-                api = MihomoAPI(base_url=current_profile_obj['url'], secret=current_profile_obj.get('secret'), working_directory=current_profile_obj['working_directory'])
+                api = ClashAPI(base_url=current_profile_obj['url'], secret=current_profile_obj.get('secret'), working_directory=current_profile_obj['working_directory'])
                 add_log(f"Selected profile '{current_profile_obj['name']}'.")
             else:
                 # This case should ideally not happen if selected_profile is always from profiles
@@ -736,10 +736,10 @@ def main():
 
         if api:
             print("Connecting...")
-            add_log(f"Attempting to connect to Mihomo at {api.base_url}...")
+            add_log(f"Attempting to connect to Clash at {api.base_url}...")
             version_info, error = api.get_version()
             if version_info:
-                add_log(f"Successfully connected to Mihomo (version: {version_info.get('version', 'unknown')}).")
+                add_log(f"Successfully connected to Clash (version: {version_info.get('version', 'unknown')}).")
                 result = show_main_menu(api)
                 if result == "switch_endpoint":
                     print("\nReturning to endpoint selection...")
@@ -748,7 +748,7 @@ def main():
                 else:
                     break
             else:
-                print(f"\nConnection failed. Please check your URL, secret, and make sure Mihomo is running. Error: {error}")
+                print(f"\nConnection failed. Please check your URL, secret, and make sure Clash is running. Error: {error}")
                 add_log(f"Connection failed to {api.base_url}. Error: {error}")
                 try:
                     go_back = inquirer.confirm(message="Go back to endpoint selection?", default=True).execute()

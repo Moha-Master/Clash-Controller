@@ -1,16 +1,16 @@
 import requests
 from urllib.parse import quote
 
-class MihomoAPI:
+class ClashAPI:
     def __init__(self, base_url, secret=None, timeout=5, working_directory=None):
         """
-        Initializes the Mihomo API client.
+        Initializes the Clash API client.
 
-        :param base_url: The base URL of the Mihomo controller API.
+        :param base_url: The base URL of the Clash controller API.
                          (e.g., http://127.0.0.1:9090 or unix:///path/to/socket)
         :param secret: The secret for API authentication.
         :param timeout: Request timeout in seconds.
-        :param working_directory: The working directory of the Mihomo core, used for config paths.
+        :param working_directory: The working directory of the Clash core, used for config paths.
         """
         self.base_url = base_url
         self.timeout = timeout
@@ -64,7 +64,7 @@ class MihomoAPI:
 
     # === General Info & Control ===
     def get_version(self):
-        """Get Mihomo version."""
+        """Get Clash version."""
         return self._request('GET', '/version')
 
     def flush_fake_ip_cache(self):
@@ -72,7 +72,7 @@ class MihomoAPI:
         return self._request('POST', '/cache/fakeip/flush')
 
     def restart(self, path="", payload=""):
-        """Restart Mihomo core."""
+        """Restart Clash core."""
         return self._request('POST', '/restart', json_data={"path": path, "payload": payload} or {})
 
     # === Configs ===
@@ -98,7 +98,7 @@ class MihomoAPI:
 
     # === Upgrade ===
     def upgrade_kernel(self):
-        """Request to upgrade the Mihomo kernel."""
+        """Request to upgrade the Clash kernel."""
         return self._request('POST', '/upgrade', json_data={})
 
     def upgrade_ui(self):
