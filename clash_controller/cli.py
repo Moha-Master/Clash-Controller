@@ -24,6 +24,34 @@ COLOR_RESET = '\033[0m'
 PROFILE_PATH = os.path.expanduser("~/.config/clash-controller/profiles.json")
 CONFIG_PROVIDERS_PATH = os.path.expanduser("~/.config/clash-controller/config_providers.json")
 TEMP_CONFIG_DIR = os.path.expanduser("~/.config/clash-controller/temp_configs")
+CONFIG_BACKUP_BASE_DIR = os.path.expanduser("~/.config/clash-controller/config_backups")
+
+
+def _safe_endpoint_key(api: ClashAPI) -> str:
+    base = (api.base_url or "unknown").replace("http+unix://", "unix-")
+    safe = []
+    for ch in base:
+        if ch.isalnum() or ch in ('-', '_', '.'):
+            safe.append(ch)
+        else:
+            safe.append('_')
+    return ''.join(safe).strip('_') or 'unknown'
+
+
+def _get_backup_paths(api: ClashAPI):
+    endpoint_key = _safe_endpoint_key(api)
+    endpoint_dir = os.path.join(CONFIG_BACKUP_BASE_DIR, endpoint_key)
+    latest_payload_path = os.path.join(endpoint_dir, "config.latest.yaml")
+    backup_payload_path = os.path.join(endpoint_dir, "config.yaml.bak")
+    latest_runtime_json = os.path.join(endpoint_dir, "runtime.latest.json")
+    backup_runtime_json = os.path.join(endpoint_dir, "runtime.bak.json")
+    return {
+        "endpoint_dir": endpoint_dir,
+        "latest_payload_path": latest_payload_path,
+        "backup_payload_path": backup_payload_path,
+        "latest_runtime_json": latest_runtime_json,
+        "backup_runtime_json": backup_runtime_json,
+    }
 
 def get_remote_last_modified(url: str) -> datetime or None:
     """Fetches the Last-Modified header from a remote URL."""
@@ -78,6 +106,114 @@ def show_logs_screen():
             print(log_entry)
     print("-" * 80)
     input("Press Enter to return to the settings menu...")
+
+
+def handle_api_result(api: ClashAPI, action_desc: str, result, error):
+    """Unified handling for API results.
+
+    - If error is None -> treat as success and log it.
+    - If error equals ClashAPI.SENT_BUT_DISCONNECTED -> notify user the request was sent but
+      the connection was interrupted; advise manual verification.
+    - Otherwise -> treat as failure and show error.
+    """
+    if error is None:
+        # Prefer concise, user-friendly messages derived from the API result.
+        def _clean_msg(raw: str) -> str:
+            if not raw:
+                return ''
+            s = raw.strip()
+            # remove common prefixes
+            for prefix in ('update error:', 'error:', 'message:', 'update:'):
+                if s.lower().startswith(prefix):
+                    s = s[len(prefix):].strip()
+                    break
+            # Capitalize first letter
+            if s:
+                s = s[0].upper() + s[1:]
+            return s
+
+        short_msg = ''
+        status_code = None
+        if isinstance(result, dict):
+            status_code = result.get('status_code') or result.get('status') if isinstance(result.get('status'), int) else None
+            status_val = str(result.get('status', '')).lower()
+            # Prefer explicit message/info keys
+            if 'message' in result:
+                short_msg = _clean_msg(str(result['message']))
+            elif 'info' in result:
+                short_msg = _clean_msg(str(result['info']))
+            elif 'body' in result and isinstance(result['body'], str):
+                short_msg = _clean_msg(result['body'])
+
+            # Determine success heuristics: explicit status value or HTTP-like code
+            success = False
+            if status_val in ('success', 'ok', 'done', 'true'):
+                success = True
+            if isinstance(status_code, int) and status_code in (200, 201, 202, 204):
+                success = True
+
+            if success:
+                print(f"Successfully {action_desc}.")
+                if short_msg:
+                    print(f"  Note: {short_msg}")
+                add_log(f"Successfully {action_desc}. {short_msg}")
+            else:
+                # Not an explicit success; surface the message as info/warning
+                if short_msg:
+                    print(f"{action_desc}: {short_msg}")
+                    add_log(f"{action_desc}: {short_msg}")
+                else:
+                    print(f"{action_desc} completed. (see details)")
+                    add_log(f"{action_desc} completed with no short message.")
+
+            # In debug mode, also print the full result JSON for inspection
+            if api and getattr(api, 'debug', False):
+                try:
+                    import json as _json
+                    pretty = _json.dumps(result, indent=2, ensure_ascii=False)
+                    print(f"[DEBUG] Full API result:\n{pretty}")
+                except Exception:
+                    print(f"[DEBUG] Full API result: {result}")
+
+            return True
+
+        # Non-dict results: just print a concise line and debug details if available
+        try:
+            s = str(result)
+            if s:
+                print(f"{action_desc} completed: {s}")
+                add_log(f"{action_desc} completed: {s}")
+            else:
+                print(f"Successfully {action_desc}.")
+                add_log(f"Successfully {action_desc}.")
+        except Exception:
+            print(f"Successfully {action_desc}.")
+            add_log(f"Successfully {action_desc}.")
+        return True
+
+    # Handle sentinel for sent-but-disconnected
+    try:
+        sentinel = api.SENT_BUT_DISCONNECTED
+    except Exception:
+        sentinel = None
+
+    if error == sentinel:
+        print(f"Request '{action_desc}' was sent but the connection was interrupted before a final response could be read.")
+        print("The operation may have been applied. Please check Clash logs/status manually to confirm.")
+        add_log(f"Request '{action_desc}' may have been applied but connection closed before response.")
+        return None
+
+    # Generic failure
+    # If the API included an info body, show it even when error happened
+    if isinstance(result, dict) and 'info' in result and result.get('info'):
+        info = str(result.get('info'))[:2000]
+        print(f"{action_desc} completed: {info}")
+        add_log(f"{action_desc} completed with info: {info}")
+        return True
+
+    print(f"Failed to {action_desc}: {error}")
+    add_log(f"Failed to {action_desc}: {error}")
+    return False
 
 def load_profiles():
     """Loads connection profiles from the config file."""
@@ -295,12 +431,6 @@ def show_overview_page(api: ClashAPI):
 
 def show_config_menu(api: ClashAPI):
     """Displays the configuration sub-menu and handles user actions."""
-    if not is_local_api(api):
-        print(f"{COLOR_RED}\nConfiguration management is only available for local Clash instances (e.g., 127.0.0.1, localhost).{COLOR_RESET}")
-        add_log("Attempted to access Configuration menu on a remote Clash instance.")
-        input("Press Enter to return to the main menu...")
-        return None
-
     while True:
 
         try:
@@ -312,7 +442,7 @@ def show_config_menu(api: ClashAPI):
             provider_choices.extend([
                 Separator(),
                 Choice(name="Add new config provider", value="new"),
-                Choice(name="Reload Config File (Local)", value="reload_local"),
+                Choice(name="Reload Config File", value="reload_local"),
                 Separator(),
                 Choice(name="Back to Main Menu", value="back"),
             ])
@@ -345,125 +475,74 @@ def show_config_menu(api: ClashAPI):
                 print(f"New config provider '{provider_name}' added.")
 
             elif action == "reload_local":
-                print("\nReloading config file from local storage...")
-                _, error = api.reload_configs()
-                if not error:
-                    print("Successfully reloaded config file from local storage.")
-                    add_log("Successfully reloaded config file from local storage.")
-                else:
-                    print(f"Failed to reload config file from local storage: {error}")
-                    add_log(f"Failed to reload config file from local storage: {error}")
+                print("\nReloading config file...")
+                result, error = api.reload_configs()
+                handle_api_result(api, "Reload config", result, error)
 
             elif action == "back":
                 return None
             elif action: # A saved config provider was selected
                 provider_url = action['url']
-                # Use the working_directory from the active API instance
-                download_path = api.working_directory
-                if not download_path:
-                    print("Error: Clash working directory not set for the current profile. Please set it in the main menu.")
-                    add_log("Error: Clash working directory not set for the current profile.")
-                    input("Press Enter to continue...")
-                    continue
 
-                print(f"Fetching config from {provider_url} to {download_path}...")
-                add_log(f"Fetching config from {provider_url} to {download_path}...")
+                print(f"Fetching config from {provider_url}...")
+                add_log(f"Fetching config from {provider_url}...")
 
-                target_download_path = download_path
-                config_file_name = "config.yaml"
-                backup_file_name = "config.yaml.bak"
-                config_full_path = os.path.join(target_download_path, config_file_name)
-                backup_full_path = os.path.join(target_download_path, backup_file_name)
-
-                # Get remote and local modification times
-                remote_mod_time = get_remote_last_modified(provider_url)
-                local_mod_time = None
-                if os.path.exists(config_full_path):
-                    local_mod_time = datetime.fromtimestamp(os.path.getmtime(config_full_path), tz=timezone.utc)
-
-                proceed_download = True
-                if remote_mod_time and local_mod_time:
-                    if remote_mod_time > local_mod_time:
-                        print(f"{COLOR_GREEN}Remote config is NEWER ({remote_mod_time.strftime('%Y-%m-%d %H:%M:%S')}) than local ({local_mod_time.strftime('%Y-%m-%d %H:%M:%S')}){COLOR_RESET}")
-                    elif remote_mod_time < local_mod_time:
-                        print(f"{COLOR_RED}Remote config is OLDER ({remote_mod_time.strftime('%Y-%m-%d %H:%M:%S')}) than local ({local_mod_time.strftime('%Y-%m-%d %H:%M:%S')}){COLOR_RESET}")
-                        confirm = inquirer.confirm(
-                            message="Remote config is older. Do you still want to download and overwrite?",
-                            default=False
-                        ).execute()
-                        if not confirm:
-                            proceed_download = False
-                            print("Download cancelled by user.")
-                    else:
-                        print(f"{COLOR_YELLOW}Remote config is the SAME as local ({remote_mod_time.strftime('%Y-%m-%d %H:%M:%S')}){COLOR_RESET}")
-                        proceed_download = False
-                        print("Skipping download as remote config is identical.")
-                elif remote_mod_time:
-                    print(f"Remote config last modified: {remote_mod_time.strftime('%Y-%m-%d %H:%M:%S')}")
-                else:
-                    print("Could not retrieve remote Last-Modified time. Proceeding with download.")
-
-                if not proceed_download:
-                    input("Press Enter to continue...")
-                    continue
-                
                 try:
-                    os.makedirs(target_download_path, exist_ok=True)
-                    
-                    # Check if the target directory is writable
-                    if not os.access(target_download_path, os.W_OK):
-                        print(f"Warning: Directory {target_download_path} is not writable. Attempting to save to a temporary location.")
-                        add_log(f"Warning: Directory {target_download_path} is not writable. Saving to temporary location.")
-                        os.makedirs(TEMP_CONFIG_DIR, exist_ok=True)
-                        target_download_path = TEMP_CONFIG_DIR
-                        config_full_path = os.path.join(target_download_path, config_file_name)
-                        backup_full_path = os.path.join(target_download_path, backup_file_name)
+                    response = requests.get(provider_url, timeout=30)
+                    response.raise_for_status()
+                    remote_payload = response.text
 
-                    response = requests.get(provider_url, stream=True)
-                    response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+                    backups = _get_backup_paths(api)
+                    os.makedirs(backups['endpoint_dir'], exist_ok=True)
 
-                    # Backup existing config.yaml if it exists
-                    if os.path.exists(config_full_path):
-                        os.replace(config_full_path, backup_full_path)
-                        print(f"Backed up existing {config_file_name} to {backup_file_name}")
-                        add_log(f"Backed up existing {config_file_name} to {backup_file_name}")
+                    # Compare with last successfully applied payload cache
+                    previous_payload = None
+                    if os.path.exists(backups['latest_payload_path']):
+                        try:
+                            with open(backups['latest_payload_path'], 'r', encoding='utf-8') as f:
+                                previous_payload = f.read()
+                        except IOError:
+                            previous_payload = None
 
-                    # Save the new config
-                    with open(config_full_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    print(f"Successfully downloaded and saved config to {config_full_path}")
-                    add_log(f"Successfully downloaded and saved config to {config_full_path}")
+                    if previous_payload is not None and previous_payload == remote_payload:
+                        print("Remote config content is identical to last applied payload. Skipping update.")
+                        add_log("Remote config content is identical to last applied payload. Skipped update.")
+                        input("Press Enter to continue...")
+                        continue
 
-                    if target_download_path == TEMP_CONFIG_DIR:
-                        print("\n--- IMPORTANT ---")
-                        print("The config was saved to a temporary location due to permissions:")
-                        print(f"  {config_full_path}")
-                        print(f"Please manually move it to your intended Clash working directory: {os.path.join(download_path, config_file_name)}")
-                        print("You might need to use 'sudo' for this, e.g.:\n")
-                        print(f"sudo mv {config_full_path} {os.path.join(download_path, config_file_name)}")
-                        print("After moving, you can reload the config via the 'Reload Config File (Local)' option in this menu.")
-                        add_log("Config saved to temporary location due to permissions. User instructed to move manually.")
-                    else:
-                        # Reload config via API only if saved to the intended location
-                        print("Reloading config file via Clash API...")
-                        _, error = api.reload_configs(path=config_full_path)
-                        if not error:
-                            print("Successfully reloaded config file via Clash API.")
-                            add_log("Successfully reloaded config file via Clash API.")
-                        else:
-                            print(f"Failed to reload config file via Clash API: {error}")
-                            add_log(f"Failed to reload config file via Clash API: {error}")
+                    # Backup previous cached payload/runtime snapshots before applying
+                    if os.path.exists(backups['latest_payload_path']):
+                        os.replace(backups['latest_payload_path'], backups['backup_payload_path'])
+                    runtime_config, runtime_error = api.get_configs()
+                    if runtime_error:
+                        add_log(f"Warning: failed to fetch runtime config before update: {runtime_error}")
+                    elif runtime_config is not None:
+                        if os.path.exists(backups['latest_runtime_json']):
+                            os.replace(backups['latest_runtime_json'], backups['backup_runtime_json'])
+                        with open(backups['latest_runtime_json'], 'w', encoding='utf-8') as f:
+                            json.dump(runtime_config, f, indent=2, ensure_ascii=False)
+
+                    print("Applying fetched config via Clash API (PUT /configs?force=true, payload)...")
+                    add_log("Applying fetched config via Clash API with payload.")
+                    result, error = api.reload_configs(payload=remote_payload)
+                    ok = handle_api_result(api, "Apply remote config payload", result, error)
+
+                    # Save payload cache only when API call was accepted/handled
+                    if ok:
+                        with open(backups['latest_payload_path'], 'w', encoding='utf-8') as f:
+                            f.write(remote_payload)
+                        print(f"Updated local payload backup at: {backups['latest_payload_path']}")
+                        add_log(f"Updated local payload backup at {backups['latest_payload_path']}")
 
                 except requests.exceptions.RequestException as e:
                     print(f"Error fetching config: {e}")
                     add_log(f"Error fetching config from {provider_url}: {e}")
                 except IOError as e:
-                    print(f"Error saving config file: {e}")
-                    add_log(f"Error saving config file: {e}")
+                    print(f"Error writing local backup files: {e}")
+                    add_log(f"Error writing local backup files: {e}")
                 except Exception as e:
-                    print(f"An unexpected error occurred during config download/save: {e}")
-                    add_log(f"Unexpected error during config download/save: {e}")
+                    print(f"An unexpected error occurred during remote config apply: {e}")
+                    add_log(f"Unexpected error during remote config apply: {e}")
                 input("Press Enter to continue...")
 
         except KeyboardInterrupt:
@@ -510,13 +589,8 @@ def show_settings_menu(api: ClashAPI):
 
             if action == "toggle_tun":
                 new_state = not tun_enabled
-                _, error = api.toggle_tun(new_state)
-                if not error:
-                    print(f"Successfully {'enabled' if new_state else 'disabled'} TUN mode.")
-                    add_log(f"Successfully {'enabled' if new_state else 'disabled'} TUN mode.")
-                else:
-                    print(f"Failed to toggle TUN mode: {error}")
-                    add_log(f"Failed to toggle TUN mode: {error}")
+                result, error = api.toggle_tun(new_state)
+                handle_api_result(api, f"Toggle TUN {'enable' if new_state else 'disable'}", result, error)
             elif action == "switch_mode":
                 modes = ['rule', 'global', 'direct']
                 current_mode_lower = current_configs.get('mode', 'rule')
@@ -526,58 +600,28 @@ def show_settings_menu(api: ClashAPI):
                     next_mode = modes[next_index]
                 except ValueError:
                     next_mode = 'rule' # Default if current mode is not in list
-                _, error = api.set_mode(next_mode)
-                if not error:
-                    print(f"Successfully switched mode to {next_mode.capitalize()}.")
-                    add_log(f"Successfully switched mode to {next_mode.capitalize()}.")
-                else:
-                    print(f"Failed to switch mode to {next_mode.capitalize()}: {error}")
-                    add_log(f"Failed to switch mode to {next_mode.capitalize()}: {error}")
+                result, error = api.set_mode(next_mode)
+                handle_api_result(api, f"Switch mode to {next_mode}", result, error)
             elif action == "reload_geo":
                 print("\nRequesting GEO databases reload...")
-                _, error = api.reload_geo_databases()
-                if not error:
-                    print("Successfully requested GEO databases reload.")
-                    add_log("Successfully requested GEO databases reload.")
-                else:
-                    print(f"Failed to request GEO databases reload: {error}")
-                    add_log(f"Failed to request GEO databases reload: {error}")
+                result, error = api.reload_geo_databases()
+                handle_api_result(api, "Reload GEO databases", result, error)
             elif action == "restart":
                 print("\nRestarting Clash Core...")
-                _, error = api.restart()
-                if not error:
-                    print("Successfully restarted Clash Core.")
-                    add_log("Successfully restarted Clash Core.")
-                else:
-                    print(f"Failed to restart Clash Core: {error}")
-                    add_log(f"Failed to restart Clash Core: {error}")
+                result, error = api.restart()
+                handle_api_result(api, "Restart Clash Core", result, error)
             elif action == "upgrade_kernel":
                 print("\nRequesting Kernel upgrade...")
-                _, error = api.upgrade_kernel()
-                if not error:
-                    print("Successfully requested Kernel upgrade. Check logs for details.")
-                    add_log("Successfully requested Kernel upgrade.")
-                else:
-                    print(f"Failed to request Kernel upgrade: {error}")
-                    add_log(f"Failed to request Kernel upgrade: {error}")
+                result, error = api.upgrade_kernel()
+                handle_api_result(api, "Upgrade Kernel", result, error)
             elif action == "upgrade_ui":
                 print("\nRequesting UI upgrade...")
-                _, error = api.upgrade_ui()
-                if not error:
-                    print("Successfully requested UI upgrade. Check logs for details.")
-                    add_log("Successfully requested UI upgrade.")
-                else:
-                    print(f"Failed to request UI upgrade: {error}")
-                    add_log(f"Failed to request UI upgrade: {error}")
+                result, error = api.upgrade_ui()
+                handle_api_result(api, "Upgrade UI", result, error)
             elif action == "upgrade_geo":
                 print("\nRequesting GEO databases upgrade...")
-                _, error = api.upgrade_geo_databases()
-                if not error:
-                    print("Successfully requested GEO databases upgrade. Check logs for details.")
-                    add_log("Successfully requested GEO databases upgrade.")
-                else:
-                    print(f"Failed to request GEO databases upgrade: {error}")
-                    add_log(f"Failed to request GEO databases upgrade: {error}")
+                result, error = api.upgrade_geo_databases()
+                handle_api_result(api, "Upgrade GEO databases", result, error)
             elif action == "switch_endpoint":
                 return "switch_endpoint"
             elif action == "view_logs": # Handle new logs option
@@ -606,10 +650,7 @@ def show_main_menu(api: ClashAPI):
                 Choice(name="Connections", value="connections"),
             ]
 
-            if is_local_api(api):
-                choices_list.append(Choice(name="Configuration", value="configuration"))
-            else:
-                choices_list.append(Choice(name="Configuration (Local Only)", value="configuration_disabled", enabled=False))
+            choices_list.append(Choice(name="Configuration", value="configuration"))
 
             choices_list.extend([
                 Choice(name="Settings", value="settings"),
@@ -644,6 +685,8 @@ def show_main_menu(api: ClashAPI):
 def main():
     """Main function to run the TUI application."""
     add_log("Application started.")
+    # Support a global --debug flag to enable request/response debugging in ClashAPI
+    debug_mode = ('--debug' in sys.argv)
     while True:
         profiles = load_profiles()
         
@@ -699,7 +742,7 @@ def main():
             save_profiles(profiles)
             add_log(f"New profile '{profile_name}' added.")
             
-            api = ClashAPI(base_url=url, secret=secret, working_directory=working_directory)
+            api = ClashAPI(base_url=url, secret=secret, working_directory=working_directory, debug=debug_mode)
         elif selected_profile:
             # Find the actual profile object in the profiles list
             current_profile_obj = None
@@ -726,7 +769,7 @@ def main():
                         add_log("Working directory prompt cancelled by user (KeyboardInterrupt).")
                         continue # Return to profile selection instead of breaking
 
-                api = ClashAPI(base_url=current_profile_obj['url'], secret=current_profile_obj.get('secret'), working_directory=current_profile_obj['working_directory'])
+                api = ClashAPI(base_url=current_profile_obj['url'], secret=current_profile_obj.get('secret'), working_directory=current_profile_obj['working_directory'], debug=debug_mode)
                 add_log(f"Selected profile '{current_profile_obj['name']}'.")
             else:
                 # This case should ideally not happen if selected_profile is always from profiles

@@ -2,7 +2,11 @@ import requests
 from urllib.parse import quote
 
 class ClashAPI:
-    def __init__(self, base_url, secret=None, timeout=5, working_directory=None):
+    # Special sentinel returned when the request was sent but the connection
+    # was interrupted (server closed connection / connection reset) and the
+    # client cannot determine final outcome. Caller should prompt user to verify.
+    SENT_BUT_DISCONNECTED = "SENT_BUT_DISCONNECTED"
+    def __init__(self, base_url, secret=None, timeout=10, working_directory=None, debug=False):
         """
         Initializes the Clash API client.
 
@@ -16,6 +20,8 @@ class ClashAPI:
         self.timeout = timeout
         self.headers = {}
         self.working_directory = working_directory
+        # When debug is True, the client will print raw request/response info
+        self.debug = bool(debug)
         if secret:
             self.headers['Authorization'] = f'Bearer {secret}'
 
@@ -27,26 +33,151 @@ class ClashAPI:
         else:
             self.session = requests.Session()
 
-    def _request(self, method, endpoint, params=None, json_data=None, stream=False):
-        """Helper method to make requests to the API."""
-        url = f"{self.base_url}{endpoint}"
+    def _is_local(self):
+        # Determine if the configured base_url points to a local service.
         try:
-            response = self.session.request(
+            if self.base_url.startswith('http+unix://'):
+                return True
+            lower = self.base_url.lower()
+            return '127.0.0.1' in lower or 'localhost' in lower or '::1' in lower
+        except Exception:
+            return False
+
+    def _request(self, method, endpoint, params=None, json_data=None, stream=False):
+        """Helper method to make requests to the API.
+
+        Behavior changes:
+        - Retries once on ReadTimeout with a longer timeout.
+        - Treats PUT /configs ReadTimeout conservatively as success (server-side reload may have completed).
+        - For streaming requests (stream=True) returns the raw response object so callers can iterate.
+        - When debug=True, prints basic request/response information to stdout.
+        """
+        url = f"{self.base_url}{endpoint}"
+
+        def do_request(timeout_val):
+            return self.session.request(
                 method,
                 url,
                 headers=self.headers,
                 params=params,
                 json=json_data,
-                timeout=self.timeout,
+                timeout=timeout_val,
                 stream=stream
             )
-            response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
 
-            # For successful responses, return JSON if content exists, otherwise return a success indicator
+        try:
+            if self.debug:
+                try:
+                    print(f"[DEBUG] Request: {method} {url}\n  headers={self.headers}\n  params={params}\n  json={json_data}\n  stream={stream}\n  timeout={self.timeout}")
+                except Exception:
+                    pass
+
+            response = do_request(self.timeout)
+
+            # If caller requested streaming, return the raw response so the caller can iterate
+            if stream:
+                if self.debug:
+                    print(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} (streaming)")
+                return response, None
+
+            # For non-stream responses: always return the API-provided body (prefer JSON),
+            # along with no error. We do not auto-raise on 4xx/5xx because the Clash API
+            # encodes operation result details in the response body.
             if response.status_code == 204 or not response.content:
-                return {"status": "success"}, None
-            return response.json(), None
+                if self.debug:
+                    print(f"[DEBUG] Response: status={response.status_code} (no content)")
+                return {"status": "success", "status_code": response.status_code}, None
+
+            # Try JSON first, fall back to text
+            try:
+                parsed = response.json()
+            except Exception:
+                parsed = response.text
+
+            if self.debug:
+                raw = (response.text or '')[:4096]
+                print(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
+
+            # If the parsed result is a dict, inject status_code for caller convenience
+            if isinstance(parsed, dict):
+                parsed.setdefault('status_code', response.status_code)
+                return parsed, None
+            return {"body": parsed, "status_code": response.status_code}, None
+
+        except requests.exceptions.ReadTimeout as e:
+            # Retry once with an increased timeout. If retry fails due to
+            # connection problems and the API is local, return the sentinel so
+            # caller can ask user to verify the outcome manually.
+            try:
+                longer_timeout = max(self.timeout * 3, 15)
+                if self.debug:
+                    print(f"[DEBUG] ReadTimeout occurred, retrying with timeout={longer_timeout}")
+                response = do_request(longer_timeout)
+                response.raise_for_status()
+
+                if stream:
+                    if self.debug:
+                        print(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} (streaming)")
+                    return response, None
+
+                if response.status_code == 204 or not response.content:
+                    if self.debug:
+                        print(f"[DEBUG] Response after retry: status={response.status_code} (no content)")
+                    return {"status": "success"}, None
+
+                if self.debug:
+                    raw = response.text[:4096]
+                    print(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
+                return response.json(), None
+
+            except requests.exceptions.RequestException as exc:
+                if self.debug:
+                    print(f"[DEBUG] ReadTimeout retry failed: {exc}")
+                # If this is a local API, we conservatively cannot determine the final
+                # state (server may have applied the operation then closed the connection),
+                # so inform the caller to verify manually.
+                if self._is_local():
+                    return None, self.SENT_BUT_DISCONNECTED
+                return None, str(e)
+
+        except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+            # Connection errors/remote close — if local, return sentinel so caller
+            # can prompt user to manually verify; otherwise return the error.
+            if self.debug:
+                print(f"[DEBUG] Connection error: {e}")
+            if self._is_local():
+                return None, self.SENT_BUT_DISCONNECTED
+            return None, str(e)
+
         except requests.exceptions.RequestException as e:
+            # If requests has attached a response, treat the response body as the
+            # authoritative API result (even for 4xx/5xx); only when no response is
+            # available do we treat this as a transport-level failure.
+            resp = getattr(e, 'response', None)
+            if resp is not None:
+                try:
+                    body = resp.json()
+                except Exception:
+                    try:
+                        body = resp.text
+                    except Exception:
+                        body = ''
+
+                if self.debug:
+                    try:
+                        print(f"[DEBUG] Error Response: status={resp.status_code} headers={dict(resp.headers)} body(<=4k)={(resp.text or '')[:4096]}")
+                    except Exception:
+                        print(f"[DEBUG] Error Response: status={getattr(resp, 'status_code', 'unknown')}")
+
+                # Return the response body as the result, do not treat as exception
+                if isinstance(body, dict):
+                    body.setdefault('status_code', resp.status_code)
+                    return body, None
+                return {"body": body, "status_code": resp.status_code}, None
+
+            # No response available: transport-level error
+            if self.debug:
+                print(f"[DEBUG] RequestException without response (transport error): {e}")
             return None, str(e)
 
     # === Real-time Data ===

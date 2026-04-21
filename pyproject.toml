@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clash_controller"
-version = "0.0.1"
+version = "0.0.2"
 description = "A controller for Clash"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -22,11 +22,9 @@ dependencies = [
     "InquirerPy"
 ]
 
-# 命令行入口
 [project.scripts]
 clashctl = "clash_controller.cli:main"
 
-# (可选) 项目链接
 [project.urls]
 Homepage = "https://github.com/Moha-Master/Clash-Controller"
 Repository = "https://github.com/Moha-Master/Clash-Controller"
