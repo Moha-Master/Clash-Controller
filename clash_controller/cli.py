@@ -283,15 +283,15 @@ def add_log(message: str):
 def show_logs_screen():
     """Displays the accumulated application logs."""
     os.system('cls' if os.name == 'nt' else 'clear')
-    print("--- Application Logs ---")
-    print("-" * 80)
+    print("--- 应用日志 ---")
+    print("-" * 100)
     if not app_logs:
-        print("No logs yet.")
+        print("暂无日志。")
     else:
         for log_entry in app_logs:
             print(log_entry)
-    print("-" * 80)
-    input("Press Enter to return to the settings menu...")
+    print("-" * 100)
+    input("按回车返回设置菜单...")
 
 
 def handle_api_result(api: ClashAPI, action_desc: str, result, error):
@@ -339,18 +339,18 @@ def handle_api_result(api: ClashAPI, action_desc: str, result, error):
                 success = True
 
             if success:
-                print(f"Successfully {action_desc}.")
+                print(f"已成功{action_desc}。")
                 if short_msg:
-                    print(f"  Note: {short_msg}")
-                add_log(f"Successfully {action_desc}. {short_msg}")
+                    print(f"  提示：{short_msg}")
+                add_log(f"已成功{action_desc}。{short_msg}")
             else:
                 # Not an explicit success; surface the message as info/warning
                 if short_msg:
                     print(f"{action_desc}: {short_msg}")
                     add_log(f"{action_desc}: {short_msg}")
                 else:
-                    print(f"{action_desc} completed. (see details)")
-                    add_log(f"{action_desc} completed with no short message.")
+                    print(f"{action_desc}已完成（请查看详情）。")
+                    add_log(f"{action_desc}已完成，但没有简短信息。")
 
             # In debug mode, also print the full result JSON for inspection
             if api and getattr(api, 'debug', False):
@@ -370,11 +370,11 @@ def handle_api_result(api: ClashAPI, action_desc: str, result, error):
                 print(f"{action_desc} completed: {s}")
                 add_log(f"{action_desc} completed: {s}")
             else:
-                print(f"Successfully {action_desc}.")
-                add_log(f"Successfully {action_desc}.")
+                print(f"已成功{action_desc}。")
+                add_log(f"已成功{action_desc}。")
         except Exception:
-            print(f"Successfully {action_desc}.")
-            add_log(f"Successfully {action_desc}.")
+            print(f"已成功{action_desc}。")
+            add_log(f"已成功{action_desc}。")
         return True
 
     # Handle sentinel for sent-but-disconnected
@@ -384,21 +384,21 @@ def handle_api_result(api: ClashAPI, action_desc: str, result, error):
         sentinel = None
 
     if error == sentinel:
-        print(f"Request '{action_desc}' was sent but the connection was interrupted before a final response could be read.")
-        print("The operation may have been applied. Please check Clash logs/status manually to confirm.")
-        add_log(f"Request '{action_desc}' may have been applied but connection closed before response.")
+        print(f"请求“{action_desc}”已发送，但在读取最终响应前连接中断。")
+        print("该操作可能已生效，请手动检查 Clash 日志/状态确认。")
+        add_log(f"请求“{action_desc}”可能已生效，但响应返回前连接中断。")
         return None
 
     # Generic failure
     # If the API included an info body, show it even when error happened
     if isinstance(result, dict) and 'info' in result and result.get('info'):
         info = str(result.get('info'))[:2000]
-        print(f"{action_desc} completed: {info}")
-        add_log(f"{action_desc} completed with info: {info}")
+        print(f"{action_desc}完成：{info}")
+        add_log(f"{action_desc}完成，附加信息：{info}")
         return True
 
-    print(f"Failed to {action_desc}: {error}")
-    add_log(f"Failed to {action_desc}: {error}")
+    print(f"{action_desc}失败：{error}")
+    add_log(f"{action_desc}失败：{error}")
     return False
 
 def load_profiles():
@@ -409,7 +409,7 @@ def load_profiles():
         with open(PROFILE_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError):
-        print(f"Warning: Could not read or parse profiles file at {PROFILE_PATH}")
+        print(f"警告：无法读取或解析配置文件 {PROFILE_PATH}")
         return []
 
 def save_profiles(profiles):
@@ -419,7 +419,7 @@ def save_profiles(profiles):
         with open(PROFILE_PATH, 'w', encoding='utf-8') as f:
             json.dump(profiles, f, indent=4, ensure_ascii=False)
     except IOError as e:
-        print(f"Error saving profiles to {PROFILE_PATH}: {e}")
+        print(f"保存连接配置到 {PROFILE_PATH} 失败：{e}")
 
 def load_config_providers():
     """Loads config provider URLs from the config file."""
@@ -429,7 +429,7 @@ def load_config_providers():
         with open(CONFIG_PROVIDERS_PATH, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (json.JSONDecodeError, IOError):
-        print(f"Warning: Could not read or parse config providers file at {CONFIG_PROVIDERS_PATH}")
+        print(f"警告：无法读取或解析配置提供方文件 {CONFIG_PROVIDERS_PATH}")
         return []
 
 def save_config_providers(providers):
@@ -439,7 +439,7 @@ def save_config_providers(providers):
         with open(CONFIG_PROVIDERS_PATH, 'w', encoding='utf-8') as f:
             json.dump(providers, f, indent=4, ensure_ascii=False)
     except IOError as e:
-        print(f"Error saving config providers to {CONFIG_PROVIDERS_PATH}: {e}")
+        print(f"保存配置提供方到 {CONFIG_PROVIDERS_PATH} 失败：{e}")
 
 def _stream_fetcher(api_method, data_queue, stop_event):
     """
@@ -477,8 +477,8 @@ def show_connections_page(api: ClashAPI):
     try:
         while True:
             os.system('cls' if os.name == 'nt' else 'clear')
-            print("Active Connections (Press Ctrl+C to return)")
-            print("-" * 80)
+            print("当前活动连接（按 Ctrl+C 返回）")
+            print("-" * 100)
             
             connections_data, error = api.get_connections()
             if error:
@@ -492,47 +492,47 @@ def show_connections_page(api: ClashAPI):
                 total_dl = connections_data.get('downloadTotal', 0) / (1024*1024)
                 total_ul = connections_data.get('uploadTotal', 0) / (1024*1024)
 
-                print(f"Total Connections: {len(connections)} | Total UL/DL: {total_ul:.2f}MB / {total_dl:.2f}MB")
-                print("-" * 80)
+                print(f"连接总数：{len(connections)} | 上传/下载总量: {total_ul:.2f}MB / {total_dl:.2f}MB")
+                print("-" * 100)
                 
                 # Header
-                print(f"{'Host':<30} {'Network':<7} {'Type':<10} {'Rule':<12} {'Chains'}")
-                print(f"{'-'*30:<30} {'-'*7:<7} {'-'*10:<10} {'-'*12:<12} {'-'*15}")
+                print(f"{'地址':<30} {'网络':<10} {'类型':<10} {'规则':<20} {'代理链'}")
+                print(f"{'-'*30:<30} {'-'*10:<10} {'-'*10:<10} {'-'*20:<20} {'-'*26}")
 
                 # Display first 20 connections to avoid clutter
                 for conn in connections[:20]:
                     metadata = conn.get('metadata', {})
-                    host = metadata.get('host') or metadata.get('destinationIP', 'N/A')
-                    network = metadata.get('network', 'N/A')
-                    conn_type = metadata.get('type', 'N/A')
-                    rule = conn.get('rule', 'N/A')
+                    host = metadata.get('host') or metadata.get('destinationIP', '未知')
+                    network = metadata.get('network', '未知')
+                    conn_type = metadata.get('type', '未知')
+                    rule = conn.get('rule', '未知')
                     chains = " -> ".join(conn.get('chains', []))
                     
                     # Truncate long hostnames
                     if len(host) > 28:
                         host = host[:25] + "..."
 
-                    print(f"{host:<30} {network:<7} {conn_type:<10} {rule:<12} {chains}")
+                    print(f"{host:<30} {network:<10} {conn_type:<10} {rule:<20} {chains}")
 
                 if len(connections) > 20:
-                    print(f"\n... and {len(connections) - 20} more connections.")
+                    print(f"\n... 以及 {len(connections) - 20} 个连接。")
 
             else:
-                print("Could not retrieve connections or no active connections.")
+                print("无法获取连接信息，或当前没有活动连接。")
 
-            print("-" * 80)
-            print(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("-" * 100)
+            print(f"更新于：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
             time.sleep(1) # Refresh interval
             
     except KeyboardInterrupt:
-        print("\nReturning to main menu...")
+        print("\n正在返回主菜单...")
         time.sleep(0.5)
 
 def show_overview_page(api: ClashAPI):
     """Displays the overview page with real-time stats using streaming."""
     version_info, error = api.get_version()
-    version = version_info.get('version', 'N/A') if version_info else 'N/A'
+    version = version_info.get('version', '未知') if version_info else '未知'
     if error:
         add_log(f"Error fetching version for overview: {error}")
         version = f"N/A (Error: {error})"
@@ -579,32 +579,32 @@ def show_overview_page(api: ClashAPI):
 
             # --- Render UI ---
             os.system('cls' if os.name == 'nt' else 'clear')
-            print("Clash Overview (Press Ctrl+C to go back to Main Menu)")
+            print("Clash 概览（按 Ctrl+C 返回主菜单）")
             print("-" * 50)
-            print(f"  Version: {version}")
+            print(f"  版本: {version}")
             print("-" * 50)
             
             # Display Traffic
             up_kbs = latest_traffic.get('up', 0) / 1024
             down_kbs = latest_traffic.get('down', 0) / 1024
-            print("  Traffic:")
-            print(f"    Upload:   {up_kbs:.2f} KB/s")
-            print(f"    Download: {down_kbs:.2f} KB/s")
+            print("  流量：")
+            print(f"    上传：{up_kbs:.2f} KB/s")
+            print(f"    下载：{down_kbs:.2f} KB/s")
 
             # Display Memory
             mem_mb = latest_memory.get('inuse', 0) / (1024 * 1024)
-            print("\n  Memory:")
-            print(f"    In Use: {mem_mb:.2f} MB")
+            print("\n  内存：")
+            print(f"    已使用：{mem_mb:.2f} MB")
             
             print("-" * 50)
-            print(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"更新于：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
             time.sleep(0.5) # Refresh rate for the screen
 
         if not streams_alive:
-            print("\nConnection to a real-time data stream was lost.")
+            print("\n连接已中断。")
             add_log("Real-time data stream lost.")
-            input("Press Enter to return to the main menu...")
+            input("按回车返回主菜单...")
 
     except KeyboardInterrupt:
         pass # User requested to go back
@@ -612,7 +612,7 @@ def show_overview_page(api: ClashAPI):
         # --- Cleanup ---
         stop_event.set() # Tell threads to stop
         # The threads are daemons, they will exit anyway, but this is cleaner.
-        print("\nReturning to main menu...")
+        print("\n正在返回主菜单...")
         time.sleep(0.5) # Give a moment for the message to be seen
 
 def show_config_menu(api: ClashAPI):
@@ -627,14 +627,14 @@ def show_config_menu(api: ClashAPI):
             ]
             provider_choices.extend([
                 Separator(),
-                Choice(name="Add new config provider", value="new"),
-                Choice(name="Reload Config File", value="reload_local"),
+                Choice(name="添加配置提供方", value="new"),
+                Choice(name="重载配置", value="reload_local"),
                 Separator(),
-                Choice(name="Back to Main Menu", value="back"),
+                Choice(name="返回主菜单", value="back"),
             ])
 
             action = inquirer.select(
-                message="Configuration Menu",
+                message="配置菜单",
                 choices=provider_choices,
                 default=None,
             ).execute()
@@ -642,11 +642,11 @@ def show_config_menu(api: ClashAPI):
             if action == "new":
                 try:
                     url = inquirer.text(
-                        message="Enter config file URL (e.g., http://example.com/config.yaml):",
+                        message="请输入配置文件更新链接（例如：http://example.com/config.yaml）：",
                         validate=EmptyInputValidator()
                     ).execute()
                     provider_name = inquirer.text(
-                        message="Enter a name for this config provider:",
+                        message="请输入该配置提供方名称：",
                         default=url,
                         validate=EmptyInputValidator()
                     ).execute()
@@ -658,19 +658,19 @@ def show_config_menu(api: ClashAPI):
                 config_providers.append(new_provider)
                 save_config_providers(config_providers)
                 add_log(f"New config provider '{provider_name}' added.")
-                print(f"New config provider '{provider_name}' added.")
+                print(f"已添加配置提供方：{provider_name}")
 
             elif action == "reload_local":
-                print("\nReloading config file...")
+                print("\n正在重载配置文件...")
                 result, error = api.reload_configs()
-                handle_api_result(api, "Reload config", result, error)
+                handle_api_result(api, "重载配置", result, error)
 
             elif action == "back":
                 return None
             elif action: # A saved config provider was selected
                 provider_url = action['url']
 
-                print(f"Fetching config from {provider_url}...")
+                print(f"正在从 {provider_url} 拉取配置...")
                 add_log(f"Fetching config from {provider_url}...")
 
                 try:
@@ -702,13 +702,13 @@ def show_config_menu(api: ClashAPI):
 
                     if endpoint_type == 'remote':
                         local_display_path = posixpath.join(current_profile.get('config_directory', '/etc/clash'), 'config.yaml')
-                        print(f"Comparing remote provider file with endpoint config: {local_display_path}")
+                        print(f"正在对比远端提供方配置与目标端点配置文件：{local_display_path}")
                         add_log(f"Comparing remote provider file with endpoint config: {local_display_path}")
                         local_mtime, local_bytes = _fetch_remote_file_meta_and_content(current_profile)
                     else:
                         config_dir = current_profile.get('config_directory', '/etc/clash')
                         local_display_path = os.path.join(config_dir, 'config.yaml')
-                        print(f"Comparing remote provider file with local config: {local_display_path}")
+                        print(f"正在对比远端提供方配置与本地配置文件：{local_display_path}")
                         add_log(f"Comparing remote provider file with local config: {local_display_path}")
                         if not os.path.exists(local_display_path):
                             raise RuntimeError(f"local config file not found: {local_display_path}")
@@ -723,60 +723,60 @@ def show_config_menu(api: ClashAPI):
                         if remote_mod_time is not None:
                             remote_ts = int(remote_mod_time.timestamp())
                             if remote_ts > local_mtime:
-                                print("Remote config is newer and content differs. Will update automatically.")
+                                print("远程配置较新且内容不同，将自动更新。")
                                 add_log("Remote config newer with different hash. Proceeding without prompt.")
                             else:
-                                print("Remote config content differs, but timestamp is same or older than target config.")
+                                print("远程配置内容不同，但时间戳与目标配置相同或更旧。")
                                 confirm = inquirer.confirm(
-                                    message="Remote config is not newer. Overwrite target config anyway?",
+                                    message="远程配置可能比本地更旧，仍要覆盖目标配置吗？",
                                     default=False
                                 ).execute()
                                 proceed_update = bool(confirm)
                         else:
-                            print("Remote config content differs, but remote Last-Modified is unavailable.")
+                            print("远程配置内容不同，但无法获取更新时间。")
                             confirm = inquirer.confirm(
-                                message="Proceed to overwrite target config?",
+                                message="是否继续覆盖目标配置？",
                                 default=True
                             ).execute()
                             proceed_update = bool(confirm)
                     else:
-                        print("Remote and target config file content are identical.")
+                        print("远程配置与目标配置内容相同。")
                         confirm = inquirer.confirm(
-                            message="Content is identical. Overwrite target config anyway?",
+                            message="内容相同，仍要覆盖目标配置吗？",
                             default=False
                         ).execute()
                         proceed_update = bool(confirm)
 
                     if not proceed_update:
-                        print("Update cancelled by user.")
+                        print("已取消更新。")
                         add_log("Config update cancelled by user after comparison.")
-                        input("Press Enter to continue...")
+                        input("按回车继续...")
                         continue
 
                     if endpoint_type == 'remote':
-                        print("Deploying config to remote endpoint via SSH stream...")
+                        print("正在通过 SSH 上传配置到远端端点...")
                         add_log("Deploying config to remote endpoint via SSH stream.")
                         _apply_remote_config_via_ssh(current_profile, remote_payload)
                     else:
-                        print("Deploying config to local endpoint file...")
+                        print("正在覆写配置到本地端点文件...")
                         add_log("Deploying config to local endpoint file.")
                         _apply_local_config_file(current_profile, remote_payload)
 
-                    print("Reloading config file via Clash API...")
+                    print("正在通过 Clash API 重载配置文件...")
                     add_log("Reloading config file via Clash API after file deployment.")
                     result, error = api.reload_configs()
-                    handle_api_result(api, "Reload config", result, error)
+                    handle_api_result(api, "重载配置", result, error)
 
                 except requests.exceptions.RequestException as e:
-                    print(f"Error fetching config: {e}")
+                    print(f"拉取配置失败：{e}")
                     add_log(f"Error fetching config from {provider_url}: {e}")
                 except IOError as e:
-                    print(f"Error writing config file: {e}")
+                    print(f"写入配置文件失败：{e}")
                     add_log(f"Error writing config file: {e}")
                 except Exception as e:
-                    print(f"An unexpected error occurred during remote config apply: {e}")
+                    print(f"上传配置时发生异常：{e}")
                     add_log(f"Unexpected error during remote config apply: {e}")
-                input("Press Enter to continue...")
+                input("按回车继续...")
 
         except KeyboardInterrupt:
             add_log("Configuration menu exited by user (KeyboardInterrupt).")
@@ -789,41 +789,41 @@ def show_settings_menu(api: ClashAPI):
         try:
             current_configs, error = api.get_configs()
             if error:
-                print(f"Error: Could not fetch settings: {error}. Going back to main menu.")
+                print(f"错误：未能获取设置内容：{error}。")
                 add_log(f"Error: Could not fetch settings: {error}.")
                 return None
 
             tun_enabled = current_configs.get('tun', {}).get('enable', False)
-            tun_status_str = "ON" if tun_enabled else "OFF"
-            current_mode = current_configs.get('mode', 'N/A').capitalize()
+            tun_status_str = "开启" if tun_enabled else "关闭"
+            current_mode = current_configs.get('mode', '未知').capitalize()
 
             action = inquirer.select(
-                message="Settings",
+                message="设置",
                 choices=[
-                    Choice(name=f"Toggle TUN Mode (Current: {tun_status_str})", value="toggle_tun"),
-                    Choice(name=f"Switch Mode (Current: {current_mode})", value="switch_mode"),
+                    Choice(name=f"切换 TUN 模式（当前：{tun_status_str}）", value="toggle_tun"),
+                    Choice(name=f"切换模式（当前：{current_mode}）", value="switch_mode"),
                     Separator(),
                     # Section 2: Reload & Restart
-                    Choice(name="Reload GEO Databases", value="reload_geo"),
-                    Choice(name="Restart Clash Core", value="restart"),
+                    Choice(name="重载 GEO 数据库", value="reload_geo"),
+                    Choice(name="重启 Clash", value="restart"),
                     Separator(),
                     # Section 3: Upgrade
-                    Choice(name="Upgrade Kernel", value="upgrade_kernel"),
-                    Choice(name="Upgrade UI", value="upgrade_ui"),
-                    Choice(name="Upgrade GEO Databases", value="upgrade_geo"),
+                    Choice(name="升级内核", value="upgrade_kernel"),
+                    Choice(name="升级 UI", value="upgrade_ui"),
+                    Choice(name="升级 GEO 数据库", value="upgrade_geo"),
                     Separator(),
                     # Section 4: Endpoint Management
-                    Choice(name="Switch Endpoint", value="switch_endpoint"),
-                    Choice(name="View Logs", value="view_logs"), # New option
+                    Choice(name="切换端点", value="switch_endpoint"),
+                    Choice(name="查看日志", value="view_logs"), # New option
                     Separator(),
-                    Choice(name="Back to Main Menu", value="back"),
+                    Choice(name="返回主菜单", value="back"),
                 ],
             ).execute()
 
             if action == "toggle_tun":
                 new_state = not tun_enabled
                 result, error = api.toggle_tun(new_state)
-                handle_api_result(api, f"Toggle TUN {'enable' if new_state else 'disable'}", result, error)
+                handle_api_result(api, f"{'启用' if new_state else '禁用'} TUN", result, error)
             elif action == "switch_mode":
                 modes = ['rule', 'global', 'direct']
                 current_mode_lower = current_configs.get('mode', 'rule')
@@ -834,27 +834,27 @@ def show_settings_menu(api: ClashAPI):
                 except ValueError:
                     next_mode = 'rule' # Default if current mode is not in list
                 result, error = api.set_mode(next_mode)
-                handle_api_result(api, f"Switch mode to {next_mode}", result, error)
+                handle_api_result(api, f"切换模式为 {next_mode}", result, error)
             elif action == "reload_geo":
-                print("\nRequesting GEO databases reload...")
+                print("\n正在请求重载 GEO 数据库...")
                 result, error = api.reload_geo_databases()
-                handle_api_result(api, "Reload GEO databases", result, error)
+                handle_api_result(api, "重载 GEO 数据库", result, error)
             elif action == "restart":
-                print("\nRestarting Clash Core...")
+                print("\n正在重启 Clash Core...")
                 result, error = api.restart()
-                handle_api_result(api, "Restart Clash Core", result, error)
+                handle_api_result(api, "重启 Clash Core", result, error)
             elif action == "upgrade_kernel":
-                print("\nRequesting Kernel upgrade...")
+                print("\n正在请求升级内核...")
                 result, error = api.upgrade_kernel()
-                handle_api_result(api, "Upgrade Kernel", result, error)
+                handle_api_result(api, "升级内核", result, error)
             elif action == "upgrade_ui":
-                print("\nRequesting UI upgrade...")
+                print("\n正在请求升级 UI...")
                 result, error = api.upgrade_ui()
-                handle_api_result(api, "Upgrade UI", result, error)
+                handle_api_result(api, "升级 UI", result, error)
             elif action == "upgrade_geo":
-                print("\nRequesting GEO databases upgrade...")
+                print("\n正在请求升级 GEO 数据库...")
                 result, error = api.upgrade_geo_databases()
-                handle_api_result(api, "Upgrade GEO databases", result, error)
+                handle_api_result(api, "升级 GEO 数据库", result, error)
             elif action == "switch_endpoint":
                 return "switch_endpoint"
             elif action == "view_logs": # Handle new logs option
@@ -873,25 +873,25 @@ def show_main_menu(api: ClashAPI):
         add_log(f"Error fetching version for main menu: {error}")
         version = f"N/A (Error: {error})"
 
-    print(f"\nSuccessfully connected to Clash (version: {version})!")
+    print(f"\n已成功连接 Clash（版本：{version}）！")
     add_log(f"Successfully connected to Clash (version: {version}).")
 
     while True:
         try:
             choices_list = [
-                Choice(name="Overview", value="overview"),
-                Choice(name="Connections", value="connections"),
+                Choice(name="概览", value="overview"),
+                Choice(name="网络活动", value="connections"),
             ]
 
-            choices_list.append(Choice(name="Configuration", value="configuration"))
+            choices_list.append(Choice(name="配置管理", value="configuration"))
 
             choices_list.extend([
-                Choice(name="Settings", value="settings"),
-                Choice(name="Exit", value="exit")
+                Choice(name="设置", value="settings"),
+                Choice(name="退出", value="exit")
             ])
 
             action = inquirer.select(
-                message="Main Menu",
+                message="主菜单",
                 choices=choices_list,
                 default=None,
             ).execute()
@@ -907,11 +907,11 @@ def show_main_menu(api: ClashAPI):
                 if result == "switch_endpoint":
                     return "switch_endpoint"
             elif action == "exit":
-                print("Exiting...")
+                print("正在退出...")
                 add_log("Application exited by user.")
                 return "exit"
         except KeyboardInterrupt:
-            print("\nExiting...")
+            print("\n正在退出...")
             add_log("Main menu exited by user (KeyboardInterrupt).")
             return "exit"
 
@@ -928,18 +928,18 @@ def main():
         ]
         profile_choices.extend([
             Separator(),
-            Choice(name="Add a new connection", value="new"),
-            Choice(name="Exit", value="exit")
+            Choice(name="添加新连接", value="new"),
+            Choice(name="退出", value="exit")
         ])
 
         try:
             selected_profile = inquirer.select(
-                message="Select a Clash connection profile:",
+                message="请选择 Clash 连接配置：",
                 choices=profile_choices,
                 default=None,
             ).execute()
         except KeyboardInterrupt:
-            print("\nOperation cancelled by user. Exiting.")
+            print("\n已取消操作，正在退出。")
             add_log("Profile selection cancelled by user (KeyboardInterrupt).")
             break
 
@@ -951,21 +951,21 @@ def main():
         if selected_profile == "new":
             try:
                 url = inquirer.text(
-                    message="Enter Clash controller URL (e.g., http://127.0.0.1:9090):", 
+                    message="请输入 Clash 控制端点（例如：http://127.0.0.1:9090）：", 
                     validate=EmptyInputValidator()
                 ).execute()
-                secret = inquirer.text(message="Enter API secret (optional):").execute()
+                secret = inquirer.text(message="请输入设置的 API 密钥（如未设置请忽略）：").execute()
                 profile_name = inquirer.text(
-                    message="Enter a name for this profile:",
+                    message="请输入端点名称：",
                     default=url,
                     validate=EmptyInputValidator()
                 ).execute()
                 endpoint_type_default = _default_endpoint_type(url)
                 endpoint_type = inquirer.select(
-                    message="Select endpoint type:",
+                    message="请选择端点类型：",
                     choices=[
-                        Choice(name="local", value="local"),
-                        Choice(name="remote", value="remote"),
+                        Choice(name="本地", value="local"),
+                        Choice(name="远程", value="remote"),
                     ],
                     default=endpoint_type_default,
                 ).execute()
@@ -974,31 +974,31 @@ def main():
                 if endpoint_type == 'remote':
                     ssh_host_default = _default_ssh_host(url)
                     ssh_host = inquirer.text(
-                        message="SSH host:",
+                        message="SSH 地址：",
                         default=ssh_host_default,
                         validate=EmptyInputValidator()
                     ).execute()
                     ssh_port_text = inquirer.text(
-                        message="SSH port:",
+                        message="SSH 端口：",
                         default="22",
                         validate=EmptyInputValidator()
                     ).execute()
                     ssh_user = inquirer.text(
-                        message="SSH username:",
+                        message="SSH 用户名：",
                         default="root",
                         validate=EmptyInputValidator()
                     ).execute()
                     auth_type = inquirer.select(
-                        message="SSH auth method:",
+                        message="SSH 认证方式：",
                         choices=[
-                            Choice(name="password", value="password"),
-                            Choice(name="private key file", value="key_file"),
-                            Choice(name="private key text", value="key_text"),
+                            Choice(name="密码", value="password"),
+                            Choice(name="私钥（文件）", value="key_file"),
+                            Choice(name="私钥（文本）", value="key_text"),
                         ],
                         default="password",
                     ).execute()
                     ignore_hostkey = inquirer.confirm(
-                        message="Ignore host key warning?",
+                        message="是否忽略 HostKey 警告？",
                         default=False,
                     ).execute()
 
@@ -1010,37 +1010,37 @@ def main():
                     }
                     if auth_type == 'password':
                         ssh_config["auth_type"] = "password"
-                        ssh_config["password"] = inquirer.secret(message="SSH password:").execute()
+                        ssh_config["password"] = inquirer.secret(message="SSH 密码：").execute()
                     elif auth_type == 'key_file':
                         ssh_config["auth_type"] = "private_key"
                         ssh_config["private_key_path"] = inquirer.text(
-                            message="Private key file path:",
+                            message="私钥文件完整路径：",
                             validate=EmptyInputValidator()
                         ).execute()
-                        ssh_config["passphrase"] = inquirer.secret(message="Key passphrase (optional):").execute()
+                        ssh_config["passphrase"] = inquirer.secret(message="私钥口令（可选）：").execute()
                     else:
                         ssh_config["auth_type"] = "private_key"
                         ssh_config["private_key"] = inquirer.text(
-                            message="Paste private key text:",
+                            message="请粘贴私钥文本：",
                             validate=EmptyInputValidator()
                         ).execute()
-                        ssh_config["passphrase"] = inquirer.secret(message="Key passphrase (optional):").execute()
+                        ssh_config["passphrase"] = inquirer.secret(message="私钥口令（可选）：").execute()
 
                 config_directory = inquirer.text(
-                    message="Enter Clash config directory:",
+                    message="请输入 Clash 配置目录：",
                     default="/etc/clash",
                     validate=EmptyInputValidator()
                 ).execute()
                 debug_ssh = inquirer.confirm(
-                    message="Enable SSH debug logs for this profile?",
+                    message="是否为此配置启用 SSH 调试日志？",
                     default=False,
                 ).execute()
                 use_sudo = inquirer.confirm(
-                    message="Use sudo when replacing config file?",
+                    message="替换配置文件时是否使用 sudo？",
                     default=True,
                 ).execute()
             except KeyboardInterrupt:
-                print("\nOperation cancelled by user. Exiting.")
+                print("\n已取消操作，正在退出。")
                 add_log("New profile creation cancelled by user (KeyboardInterrupt).")
                 break
             
@@ -1071,11 +1071,11 @@ def main():
                 # Close beta: no backward compatibility fallback for old schema
                 required_fields = ['endpoint_type', 'config_directory', 'use_sudo']
                 if any(k not in current_profile_obj for k in required_fields):
-                    print(f"Profile '{current_profile_obj['name']}' uses an old schema. Please recreate this profile.")
+                    print(f"配置“{current_profile_obj['name']}”使用旧版本格式，请重新创建该配置。")
                     add_log(f"Profile '{current_profile_obj['name']}' rejected due to old schema.")
                     continue
                 if current_profile_obj.get('endpoint_type') == 'remote' and not current_profile_obj.get('ssh'):
-                    print(f"Profile '{current_profile_obj['name']}' is missing SSH settings. Please recreate this profile.")
+                    print(f"配置“{current_profile_obj['name']}”缺少 SSH 设置，请重新创建该配置。")
                     add_log(f"Profile '{current_profile_obj['name']}' missing SSH settings.")
                     continue
 
@@ -1083,28 +1083,28 @@ def main():
                 add_log(f"Selected profile '{current_profile_obj['name']}'.")
             else:
                 # This case should ideally not happen if selected_profile is always from profiles
-                print("Error: Selected profile not found in the loaded profiles list.")
+                print("错误：在已加载的配置列表中未找到所选配置。")
                 add_log("Error: Selected profile not found in the loaded profiles list.")
                 continue
 
         if api:
-            print("Connecting...")
+            print("正在连接...")
             add_log(f"Attempting to connect to Clash at {api.base_url}...")
             version_info, error = api.get_version()
             if version_info:
                 add_log(f"Successfully connected to Clash (version: {version_info.get('version', 'unknown')}).")
                 result = show_main_menu(api)
                 if result == "switch_endpoint":
-                    print("\nReturning to endpoint selection...")
+                    print("\n正在返回端点选择...")
                     add_log("Returning to endpoint selection.")
                     continue
                 else:
                     break
             else:
-                print(f"\nConnection failed. Please check your URL, secret, and make sure Clash is running. Error: {error}")
+                print(f"\n连接失败，请检查端点配置，并确认 Clash 正在运行。错误：{error}")
                 add_log(f"Connection failed to {api.base_url}. Error: {error}")
                 try:
-                    go_back = inquirer.confirm(message="Go back to endpoint selection?", default=True).execute()
+                    go_back = inquirer.confirm(message="是否返回端点选择？", default=True).execute()
                     if go_back:
                         add_log("User chose to go back to endpoint selection.")
                         continue
@@ -1112,7 +1112,7 @@ def main():
                         add_log("User chose to exit after connection failure.")
                         break
                 except KeyboardInterrupt:
-                    print("\nExiting.")
+                    print("\n正在退出。")
                     add_log("User exited during connection failure prompt (KeyboardInterrupt).")
                     break
 
@@ -1120,5 +1120,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as e:
-        print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
+        print(f"\n发生未预期错误：{e}", file=sys.stderr)
         add_log(f"An unexpected error occurred: {e}")

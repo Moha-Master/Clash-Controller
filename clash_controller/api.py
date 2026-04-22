@@ -133,6 +133,9 @@ class ClashAPI:
             except requests.exceptions.RequestException as exc:
                 if self.debug:
                     print(f"[DEBUG] ReadTimeout retry failed: {exc}")
+                # Reload config may legitimately finish server-side while client times out.
+                if method.upper() == 'PUT' and endpoint.startswith('/configs'):
+                    return None, self.SENT_BUT_DISCONNECTED
                 # If this is a local API, we conservatively cannot determine the final
                 # state (server may have applied the operation then closed the connection),
                 # so inform the caller to verify manually.
@@ -145,6 +148,8 @@ class ClashAPI:
             # can prompt user to manually verify; otherwise return the error.
             if self.debug:
                 print(f"[DEBUG] Connection error: {e}")
+            if method.upper() == 'PUT' and endpoint.startswith('/configs'):
+                return None, self.SENT_BUT_DISCONNECTED
             if self._is_local():
                 return None, self.SENT_BUT_DISCONNECTED
             return None, str(e)
