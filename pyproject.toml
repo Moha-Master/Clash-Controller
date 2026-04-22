@@ -19,7 +19,9 @@ classifiers = [
 dependencies = [
     "requests",
     "requests_unixsocket",
-    "InquirerPy"
+    "InquirerPy",
+    "paramiko",
+    "scp"
 ]
 
 [project.scripts]

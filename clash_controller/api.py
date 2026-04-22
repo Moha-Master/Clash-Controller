@@ -109,7 +109,7 @@ class ClashAPI:
             # connection problems and the API is local, return the sentinel so
             # caller can ask user to verify the outcome manually.
             try:
-                longer_timeout = max(self.timeout * 3, 15)
+                longer_timeout = 15
                 if self.debug:
                     print(f"[DEBUG] ReadTimeout occurred, retrying with timeout={longer_timeout}")
                 response = do_request(longer_timeout)

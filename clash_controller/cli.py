@@ -9,8 +9,14 @@ from InquirerPy.validator import EmptyInputValidator
 from InquirerPy.base.control import Choice, Separator
 import requests # Need to import for requests.exceptions.RequestException
 import os.path
+import io
+import hashlib
+import posixpath
+import subprocess
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import paramiko
 
 from .api import ClashAPI
 
@@ -23,35 +29,215 @@ COLOR_RESET = '\033[0m'
 # Path for storing connection profiles in the user's home directory
 PROFILE_PATH = os.path.expanduser("~/.config/clash-controller/profiles.json")
 CONFIG_PROVIDERS_PATH = os.path.expanduser("~/.config/clash-controller/config_providers.json")
-TEMP_CONFIG_DIR = os.path.expanduser("~/.config/clash-controller/temp_configs")
-CONFIG_BACKUP_BASE_DIR = os.path.expanduser("~/.config/clash-controller/config_backups")
 
 
-def _safe_endpoint_key(api: ClashAPI) -> str:
-    base = (api.base_url or "unknown").replace("http+unix://", "unix-")
-    safe = []
-    for ch in base:
-        if ch.isalnum() or ch in ('-', '_', '.'):
-            safe.append(ch)
-        else:
-            safe.append('_')
-    return ''.join(safe).strip('_') or 'unknown'
+def _default_endpoint_type(url: str) -> str:
+    try:
+        host = (urlparse(url).hostname or '').lower()
+        if host in ('127.0.0.1', 'localhost', '::1'):
+            return 'local'
+    except Exception:
+        pass
+    return 'remote'
 
 
-def _get_backup_paths(api: ClashAPI):
-    endpoint_key = _safe_endpoint_key(api)
-    endpoint_dir = os.path.join(CONFIG_BACKUP_BASE_DIR, endpoint_key)
-    latest_payload_path = os.path.join(endpoint_dir, "config.latest.yaml")
-    backup_payload_path = os.path.join(endpoint_dir, "config.yaml.bak")
-    latest_runtime_json = os.path.join(endpoint_dir, "runtime.latest.json")
-    backup_runtime_json = os.path.join(endpoint_dir, "runtime.bak.json")
-    return {
-        "endpoint_dir": endpoint_dir,
-        "latest_payload_path": latest_payload_path,
-        "backup_payload_path": backup_payload_path,
-        "latest_runtime_json": latest_runtime_json,
-        "backup_runtime_json": backup_runtime_json,
+def _default_ssh_host(url: str) -> str:
+    try:
+        host = urlparse(url).hostname
+        if host:
+            return host
+    except Exception:
+        pass
+    return '127.0.0.1'
+
+
+def _compute_sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _connect_ssh(profile: dict):
+    ssh_cfg = profile.get('ssh') or {}
+    host = ssh_cfg.get('host')
+    port = int(ssh_cfg.get('port', 22))
+    username = ssh_cfg.get('username', 'root')
+    auth_type = ssh_cfg.get('auth_type', 'password')
+    ignore_hostkey = bool(ssh_cfg.get('ignore_hostkey', False))
+
+    client = paramiko.SSHClient()
+    if ignore_hostkey:
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+    connect_kwargs = {
+        'hostname': host,
+        'port': port,
+        'username': username,
+        'timeout': 15,
     }
+    if auth_type == 'password':
+        connect_kwargs['password'] = ssh_cfg.get('password', '')
+        connect_kwargs['look_for_keys'] = False
+        connect_kwargs['allow_agent'] = False
+    else:
+        private_key = ssh_cfg.get('private_key', '')
+        private_key_path = ssh_cfg.get('private_key_path', '')
+        passphrase = ssh_cfg.get('passphrase', '')
+        pkey = None
+
+        if private_key_path:
+            # Prefer Paramiko's built-in connect key handling for key files.
+            connect_kwargs['key_filename'] = private_key_path
+            if passphrase:
+                connect_kwargs['passphrase'] = passphrase
+            connect_kwargs['look_for_keys'] = False
+            connect_kwargs['allow_agent'] = False
+        elif private_key:
+            # For key text input, load to a PKey object then pass via pkey.
+            key_loaders_text = [
+                paramiko.RSAKey.from_private_key,
+                paramiko.Ed25519Key.from_private_key,
+                paramiko.ECDSAKey.from_private_key,
+            ]
+            dss_cls = getattr(paramiko, 'DSSKey', None)
+            if dss_cls is not None:
+                key_loaders_text.append(dss_cls.from_private_key)
+            key_file = io.StringIO(private_key)
+            last_err = None
+            for loader in key_loaders_text:
+                key_file.seek(0)
+                try:
+                    pkey = loader(key_file, password=passphrase or None)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+            if pkey is None and last_err is not None:
+                raise last_err
+            connect_kwargs['pkey'] = pkey
+            connect_kwargs['look_for_keys'] = False
+            connect_kwargs['allow_agent'] = False
+            if passphrase:
+                connect_kwargs['passphrase'] = passphrase
+        else:
+            raise RuntimeError("private key auth selected but no private key file/text provided")
+
+    client.connect(**connect_kwargs)
+    return client
+
+
+def _ssh_run(ssh_client, command: str):
+    stdin, stdout, stderr = ssh_client.exec_command(command)
+    code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode('utf-8', errors='replace')
+    err = stderr.read().decode('utf-8', errors='replace')
+    return code, out, err
+
+
+def _fetch_remote_file_meta_and_content(profile: dict):
+    config_dir = profile.get('config_directory', '/etc/clash')
+    config_path = posixpath.join(config_dir, 'config.yaml')
+    use_sudo = bool(profile.get('use_sudo', True))
+    ssh_cfg = profile.get('ssh') or {}
+    ssh_user = str(ssh_cfg.get('username', 'root')).strip()
+    use_remote_sudo = use_sudo and ssh_user != 'root'
+
+    ssh = _connect_ssh(profile)
+    try:
+        sudo_prefix = 'sudo ' if use_remote_sudo else ''
+        # Avoid nested shell quoting here; keep command simple.
+        stat_cmd = f"{sudo_prefix}stat -c %Y:%s -- {config_path}"
+        if profile.get('debug_ssh'):
+            print(f"[DEBUG][SSH] stat_cmd={stat_cmd}")
+        code, out, err = _ssh_run(ssh, stat_cmd)
+        if code != 0:
+            raise RuntimeError(f"failed to stat remote config: {err.strip() or out.strip()}")
+        stat_text = out.strip()
+        mtime_str = stat_text.split(':', 1)[0] if stat_text else '0'
+        remote_mtime = int(mtime_str)
+
+        cat_cmd = f"{sudo_prefix}cat -- {config_path}"
+        if profile.get('debug_ssh'):
+            print(f"[DEBUG][SSH] cat_cmd={cat_cmd}")
+        code, out, err = _ssh_run(ssh, cat_cmd)
+        if code != 0:
+            raise RuntimeError(f"failed to read remote config: {err.strip() or out.strip()}")
+        content = out.encode('utf-8')
+        return remote_mtime, content
+    finally:
+        ssh.close()
+
+
+def _ssh_run_with_input(ssh_client, command: str, input_text: str):
+    stdin, stdout, stderr = ssh_client.exec_command(command)
+    if input_text is not None:
+        stdin.write(input_text)
+        stdin.flush()
+    try:
+        stdin.channel.shutdown_write()
+    except Exception:
+        pass
+    code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode('utf-8', errors='replace')
+    err = stderr.read().decode('utf-8', errors='replace')
+    return code, out, err
+
+
+def _apply_remote_config_via_ssh(profile: dict, payload_text: str):
+    config_dir = profile.get('config_directory', '/etc/clash')
+    config_path = posixpath.join(config_dir, 'config.yaml')
+    bak_path = posixpath.join(config_dir, 'config.yaml.bak')
+    use_sudo = bool(profile.get('use_sudo', True))
+    ssh_cfg = profile.get('ssh') or {}
+    ssh_user = str(ssh_cfg.get('username', 'root')).strip()
+    use_remote_sudo = use_sudo and ssh_user != 'root'
+
+    ssh = _connect_ssh(profile)
+    try:
+        sudo_prefix = 'sudo ' if use_remote_sudo else ''
+        cmd_backup = f"{sudo_prefix}cp -- {config_path} {bak_path}"
+        if profile.get('debug_ssh'):
+            print(f"[DEBUG][SSH] backup_cmd={cmd_backup}")
+        code, out, err = _ssh_run(ssh, cmd_backup)
+        if code != 0:
+            raise RuntimeError(f"failed to backup remote config: {err.strip() or out.strip()}")
+
+        cmd_replace = f"{sudo_prefix}tee -- {config_path}"
+        if profile.get('debug_ssh'):
+            print(f"[DEBUG][SSH] replace_cmd={cmd_replace}")
+        code, out, err = _ssh_run_with_input(ssh, cmd_replace, payload_text)
+        if code != 0:
+            raise RuntimeError(f"failed to replace remote config: {err.strip() or out.strip()}")
+
+    finally:
+        ssh.close()
+
+
+def _apply_local_config_file(profile: dict, payload_text: str):
+    config_dir = profile.get('config_directory', '/etc/clash')
+    config_path = os.path.join(config_dir, 'config.yaml')
+    bak_path = os.path.join(config_dir, 'config.yaml.bak')
+    use_sudo = bool(profile.get('use_sudo', True))
+
+    if use_sudo:
+        backup_cmd = ['sudo', 'cp', config_path, bak_path]
+        backup = subprocess.run(backup_cmd, capture_output=True, text=True)
+        if backup.returncode != 0:
+            raise RuntimeError(f"failed to backup local config with sudo: {(backup.stderr or backup.stdout).strip()}")
+
+        replace_cmd = ['sudo', 'tee', config_path]
+        replace = subprocess.run(replace_cmd, input=payload_text, capture_output=True, text=True)
+        if replace.returncode != 0:
+            raise RuntimeError(f"failed to replace local config with sudo: {(replace.stderr or replace.stdout).strip()}")
+        return
+
+    os.makedirs(config_dir, exist_ok=True)
+    if os.path.exists(config_path):
+        os.replace(config_path, bak_path)
+    with open(config_path, 'w', encoding='utf-8') as f:
+        f.write(payload_text)
+
 
 def get_remote_last_modified(url: str) -> datetime or None:
     """Fetches the Last-Modified header from a remote URL."""
@@ -491,55 +677,102 @@ def show_config_menu(api: ClashAPI):
                     response = requests.get(provider_url, timeout=30)
                     response.raise_for_status()
                     remote_payload = response.text
+                    remote_bytes = remote_payload.encode('utf-8')
+                    remote_hash = _compute_sha256(remote_bytes)
+                    remote_mod_time = get_remote_last_modified(provider_url)
 
-                    backups = _get_backup_paths(api)
-                    os.makedirs(backups['endpoint_dir'], exist_ok=True)
+                    # Find current selected profile details for SCP path and endpoint mode
+                    profiles = load_profiles()
+                    current_profile = None
+                    for p in profiles:
+                        if p.get('url') == api.base_url and p.get('secret') == (api.headers.get('Authorization', '').replace('Bearer ', '') if api.headers.get('Authorization') else None):
+                            current_profile = p
+                            break
+                    if current_profile is None:
+                        for p in profiles:
+                            if p.get('url') == api.base_url:
+                                current_profile = p
+                                break
+                    if current_profile is None:
+                        raise RuntimeError("active profile not found in local profiles.json")
 
-                    # Compare with last successfully applied payload cache
-                    previous_payload = None
-                    if os.path.exists(backups['latest_payload_path']):
-                        try:
-                            with open(backups['latest_payload_path'], 'r', encoding='utf-8') as f:
-                                previous_payload = f.read()
-                        except IOError:
-                            previous_payload = None
+                    endpoint_type = current_profile.get('endpoint_type', _default_endpoint_type(current_profile.get('url', '')))
+                    if '--debug' in sys.argv:
+                        current_profile['debug_ssh'] = True
 
-                    if previous_payload is not None and previous_payload == remote_payload:
-                        print("Remote config content is identical to last applied payload. Skipping update.")
-                        add_log("Remote config content is identical to last applied payload. Skipped update.")
+                    if endpoint_type == 'remote':
+                        local_display_path = posixpath.join(current_profile.get('config_directory', '/etc/clash'), 'config.yaml')
+                        print(f"Comparing remote provider file with endpoint config: {local_display_path}")
+                        add_log(f"Comparing remote provider file with endpoint config: {local_display_path}")
+                        local_mtime, local_bytes = _fetch_remote_file_meta_and_content(current_profile)
+                    else:
+                        config_dir = current_profile.get('config_directory', '/etc/clash')
+                        local_display_path = os.path.join(config_dir, 'config.yaml')
+                        print(f"Comparing remote provider file with local config: {local_display_path}")
+                        add_log(f"Comparing remote provider file with local config: {local_display_path}")
+                        if not os.path.exists(local_display_path):
+                            raise RuntimeError(f"local config file not found: {local_display_path}")
+                        local_mtime = int(os.path.getmtime(local_display_path))
+                        with open(local_display_path, 'rb') as f:
+                            local_bytes = f.read()
+
+                    local_hash = _compute_sha256(local_bytes)
+
+                    proceed_update = True
+                    if remote_hash != local_hash:
+                        if remote_mod_time is not None:
+                            remote_ts = int(remote_mod_time.timestamp())
+                            if remote_ts > local_mtime:
+                                print("Remote config is newer and content differs. Will update automatically.")
+                                add_log("Remote config newer with different hash. Proceeding without prompt.")
+                            else:
+                                print("Remote config content differs, but timestamp is same or older than target config.")
+                                confirm = inquirer.confirm(
+                                    message="Remote config is not newer. Overwrite target config anyway?",
+                                    default=False
+                                ).execute()
+                                proceed_update = bool(confirm)
+                        else:
+                            print("Remote config content differs, but remote Last-Modified is unavailable.")
+                            confirm = inquirer.confirm(
+                                message="Proceed to overwrite target config?",
+                                default=True
+                            ).execute()
+                            proceed_update = bool(confirm)
+                    else:
+                        print("Remote and target config file content are identical.")
+                        confirm = inquirer.confirm(
+                            message="Content is identical. Overwrite target config anyway?",
+                            default=False
+                        ).execute()
+                        proceed_update = bool(confirm)
+
+                    if not proceed_update:
+                        print("Update cancelled by user.")
+                        add_log("Config update cancelled by user after comparison.")
                         input("Press Enter to continue...")
                         continue
 
-                    # Backup previous cached payload/runtime snapshots before applying
-                    if os.path.exists(backups['latest_payload_path']):
-                        os.replace(backups['latest_payload_path'], backups['backup_payload_path'])
-                    runtime_config, runtime_error = api.get_configs()
-                    if runtime_error:
-                        add_log(f"Warning: failed to fetch runtime config before update: {runtime_error}")
-                    elif runtime_config is not None:
-                        if os.path.exists(backups['latest_runtime_json']):
-                            os.replace(backups['latest_runtime_json'], backups['backup_runtime_json'])
-                        with open(backups['latest_runtime_json'], 'w', encoding='utf-8') as f:
-                            json.dump(runtime_config, f, indent=2, ensure_ascii=False)
+                    if endpoint_type == 'remote':
+                        print("Deploying config to remote endpoint via SSH stream...")
+                        add_log("Deploying config to remote endpoint via SSH stream.")
+                        _apply_remote_config_via_ssh(current_profile, remote_payload)
+                    else:
+                        print("Deploying config to local endpoint file...")
+                        add_log("Deploying config to local endpoint file.")
+                        _apply_local_config_file(current_profile, remote_payload)
 
-                    print("Applying fetched config via Clash API (PUT /configs?force=true, payload)...")
-                    add_log("Applying fetched config via Clash API with payload.")
-                    result, error = api.reload_configs(payload=remote_payload)
-                    ok = handle_api_result(api, "Apply remote config payload", result, error)
-
-                    # Save payload cache only when API call was accepted/handled
-                    if ok:
-                        with open(backups['latest_payload_path'], 'w', encoding='utf-8') as f:
-                            f.write(remote_payload)
-                        print(f"Updated local payload backup at: {backups['latest_payload_path']}")
-                        add_log(f"Updated local payload backup at {backups['latest_payload_path']}")
+                    print("Reloading config file via Clash API...")
+                    add_log("Reloading config file via Clash API after file deployment.")
+                    result, error = api.reload_configs()
+                    handle_api_result(api, "Reload config", result, error)
 
                 except requests.exceptions.RequestException as e:
                     print(f"Error fetching config: {e}")
                     add_log(f"Error fetching config from {provider_url}: {e}")
                 except IOError as e:
-                    print(f"Error writing local backup files: {e}")
-                    add_log(f"Error writing local backup files: {e}")
+                    print(f"Error writing config file: {e}")
+                    add_log(f"Error writing config file: {e}")
                 except Exception as e:
                     print(f"An unexpected error occurred during remote config apply: {e}")
                     add_log(f"Unexpected error during remote config apply: {e}")
@@ -727,22 +960,105 @@ def main():
                     default=url,
                     validate=EmptyInputValidator()
                 ).execute()
-                working_directory = inquirer.text(
-                    message="Enter Clash working directory (e.g., ~/.config/clash):",
-                    default=os.path.expanduser("~/.config/clash"),
+                endpoint_type_default = _default_endpoint_type(url)
+                endpoint_type = inquirer.select(
+                    message="Select endpoint type:",
+                    choices=[
+                        Choice(name="local", value="local"),
+                        Choice(name="remote", value="remote"),
+                    ],
+                    default=endpoint_type_default,
+                ).execute()
+
+                ssh_config = None
+                if endpoint_type == 'remote':
+                    ssh_host_default = _default_ssh_host(url)
+                    ssh_host = inquirer.text(
+                        message="SSH host:",
+                        default=ssh_host_default,
+                        validate=EmptyInputValidator()
+                    ).execute()
+                    ssh_port_text = inquirer.text(
+                        message="SSH port:",
+                        default="22",
+                        validate=EmptyInputValidator()
+                    ).execute()
+                    ssh_user = inquirer.text(
+                        message="SSH username:",
+                        default="root",
+                        validate=EmptyInputValidator()
+                    ).execute()
+                    auth_type = inquirer.select(
+                        message="SSH auth method:",
+                        choices=[
+                            Choice(name="password", value="password"),
+                            Choice(name="private key file", value="key_file"),
+                            Choice(name="private key text", value="key_text"),
+                        ],
+                        default="password",
+                    ).execute()
+                    ignore_hostkey = inquirer.confirm(
+                        message="Ignore host key warning?",
+                        default=False,
+                    ).execute()
+
+                    ssh_config = {
+                        "host": ssh_host,
+                        "port": int(ssh_port_text),
+                        "username": ssh_user,
+                        "ignore_hostkey": bool(ignore_hostkey),
+                    }
+                    if auth_type == 'password':
+                        ssh_config["auth_type"] = "password"
+                        ssh_config["password"] = inquirer.secret(message="SSH password:").execute()
+                    elif auth_type == 'key_file':
+                        ssh_config["auth_type"] = "private_key"
+                        ssh_config["private_key_path"] = inquirer.text(
+                            message="Private key file path:",
+                            validate=EmptyInputValidator()
+                        ).execute()
+                        ssh_config["passphrase"] = inquirer.secret(message="Key passphrase (optional):").execute()
+                    else:
+                        ssh_config["auth_type"] = "private_key"
+                        ssh_config["private_key"] = inquirer.text(
+                            message="Paste private key text:",
+                            validate=EmptyInputValidator()
+                        ).execute()
+                        ssh_config["passphrase"] = inquirer.secret(message="Key passphrase (optional):").execute()
+
+                config_directory = inquirer.text(
+                    message="Enter Clash config directory:",
+                    default="/etc/clash",
                     validate=EmptyInputValidator()
+                ).execute()
+                debug_ssh = inquirer.confirm(
+                    message="Enable SSH debug logs for this profile?",
+                    default=False,
+                ).execute()
+                use_sudo = inquirer.confirm(
+                    message="Use sudo when replacing config file?",
+                    default=True,
                 ).execute()
             except KeyboardInterrupt:
                 print("\nOperation cancelled by user. Exiting.")
                 add_log("New profile creation cancelled by user (KeyboardInterrupt).")
                 break
             
-            new_profile = {"name": profile_name, "url": url, "secret": secret, "working_directory": working_directory}
+            new_profile = {
+                "name": profile_name,
+                "url": url,
+                "secret": secret,
+                "endpoint_type": endpoint_type,
+                "config_directory": config_directory,
+                "use_sudo": bool(use_sudo),
+                "debug_ssh": bool(debug_ssh),
+                "ssh": ssh_config,
+            }
             profiles.append(new_profile)
             save_profiles(profiles)
             add_log(f"New profile '{profile_name}' added.")
             
-            api = ClashAPI(base_url=url, secret=secret, working_directory=working_directory, debug=debug_mode)
+            api = ClashAPI(base_url=url, secret=secret, working_directory=config_directory, debug=debug_mode)
         elif selected_profile:
             # Find the actual profile object in the profiles list
             current_profile_obj = None
@@ -752,24 +1068,18 @@ def main():
                     break
 
             if current_profile_obj:
-                # Check for and prompt for working_directory if missing (for backward compatibility)
-                if 'working_directory' not in current_profile_obj or not current_profile_obj['working_directory']:
-                    print(f"\nProfile '{current_profile_obj['name']}' is missing a working directory.")
-                    try:
-                        working_directory = inquirer.text(
-                            message="Enter Clash working directory for this profile (e.g., ~/.config/clash):",
-                            default=os.path.expanduser("~/.config/clash"),
-                            validate=EmptyInputValidator()
-                        ).execute()
-                        current_profile_obj['working_directory'] = working_directory
-                        save_profiles(profiles) # Now this should save the updated list
-                        add_log(f"Updated profile '{current_profile_obj['name']}' with working directory '{working_directory}'.")
-                    except KeyboardInterrupt:
-                        print("\nOperation cancelled by user. Returning to profile selection.")
-                        add_log("Working directory prompt cancelled by user (KeyboardInterrupt).")
-                        continue # Return to profile selection instead of breaking
+                # Close beta: no backward compatibility fallback for old schema
+                required_fields = ['endpoint_type', 'config_directory', 'use_sudo']
+                if any(k not in current_profile_obj for k in required_fields):
+                    print(f"Profile '{current_profile_obj['name']}' uses an old schema. Please recreate this profile.")
+                    add_log(f"Profile '{current_profile_obj['name']}' rejected due to old schema.")
+                    continue
+                if current_profile_obj.get('endpoint_type') == 'remote' and not current_profile_obj.get('ssh'):
+                    print(f"Profile '{current_profile_obj['name']}' is missing SSH settings. Please recreate this profile.")
+                    add_log(f"Profile '{current_profile_obj['name']}' missing SSH settings.")
+                    continue
 
-                api = ClashAPI(base_url=current_profile_obj['url'], secret=current_profile_obj.get('secret'), working_directory=current_profile_obj['working_directory'], debug=debug_mode)
+                api = ClashAPI(base_url=current_profile_obj['url'], secret=current_profile_obj.get('secret'), working_directory=current_profile_obj['config_directory'], debug=debug_mode)
                 add_log(f"Selected profile '{current_profile_obj['name']}'.")
             else:
                 # This case should ideally not happen if selected_profile is always from profiles
