@@ -29,15 +29,16 @@ class SettingsScreen(PageScreen):
             with Horizontal(classes="kv-row gap-top"):
                 yield Static("模式", classes="kv-label")
                 yield Select(MODES, value="rule", allow_blank=False, compact=True, id="st-mode", classes="kv-ctl")
-        with Horizontal(classes="filter-row gap-top"):
-            yield Static("核心操作", classes="fl-label")
-            yield Button("重载 GEO", id="reload-geo", compact=True)
-        with Horizontal(classes="filter-row gap-top"):
-            yield Static("重启升级", classes="fl-label")
-            yield Button("重启 Clash", id="restart", variant="error", compact=True)
-            yield Button("升级内核", id="up-kernel", compact=True)
-            yield Button("升级 UI", id="up-ui", compact=True)
-            yield Button("升级 GEO", id="up-geo", compact=True)
+        with Vertical(classes="panel"):
+            with Horizontal(classes="filter-row"):
+                yield Static("核心操作", classes="fl-label")
+                yield Button("重载 GEO", id="reload-geo")
+            with Horizontal(classes="filter-row gap-top"):
+                yield Static("重启升级", classes="fl-label")
+                yield Button("重启 Clash", id="restart", variant="error")
+                yield Button("升级内核", id="up-kernel")
+                yield Button("升级 UI", id="up-ui")
+                yield Button("升级 GEO", id="up-geo")
 
     def on_mount(self) -> None:
         self.set_subtitle((self.app.profile or {}).get("name", ""))

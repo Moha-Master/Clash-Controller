@@ -4,7 +4,7 @@ import asyncio
 from rich.text import Text
 from textual import on, work
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Static
 
 from ..config import load_config_providers, save_config_providers
@@ -32,14 +32,15 @@ class ConfigScreen(PageScreen):
         self._display: list = []
 
     def compose_page(self):
-        with Horizontal(classes="filter-row"):
-            yield Button("拉取并部署", id="deploy", variant="primary", compact=True)
-            yield Button("＋ 新增", id="add", compact=True)
-            yield Button("编辑", id="edit", compact=True)
-            yield Button("删除", id="delete", variant="error", compact=True)
-            yield Button("重载配置", id="reload-api", compact=True)
-            yield Static("", classes="fill")
-            yield Static("单击行 = 部署该提供方", classes="fl-label")
+        with Vertical(classes="panel"):
+            with Horizontal(classes="filter-row"):
+                yield Button("拉取并部署", id="deploy", variant="primary")
+                yield Button("＋ 新增", id="add")
+                yield Button("编辑", id="edit")
+                yield Button("删除", id="delete", variant="error")
+                yield Button("重载配置", id="reload-api")
+                yield Static("", classes="fill")
+                yield Static("单击行 = 部署该提供方", classes="fl-label")
         yield make_table("名称", "地址", id="cf-table")
 
     def on_mount(self) -> None:

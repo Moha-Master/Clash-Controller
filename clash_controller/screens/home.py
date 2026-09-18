@@ -7,18 +7,12 @@ from textual.screen import Screen
 from textual.widgets import OptionList, Static
 
 from .. import __version__
-from ..ui import LOGO_WIDTH, logo_text
-
-try:  # textual 各版本 Option 导出位置不同
-    from textual.widgets.option_list import Option
-except ImportError:  # pragma: no cover
-    from textual.widgets._option_list import Option
+from ..ui import LOGO_WIDTH, home_col_width, logo_text
+from ..widgets import HintBar, MenuMarquee
 
 
 class HomeScreen(Screen):
     """功能主菜单：概览 / 配置管理 / 设置 / 切换端点。"""
-
-    CSS_CLASSES = "logo-page"
 
     def __init__(self) -> None:
         super().__init__(classes="logo-page")
@@ -46,29 +40,29 @@ class HomeScreen(Screen):
                 name = (self.app.profile or {}).get("name", "")
                 yield Static(f"v{__version__}" + (f" · {name}" if name else ""), id="home-version")
                 yield OptionList(id="home-list")
-        yield Static("↑↓ 选择 · 回车 进入 · 1-4 直达 · Esc/Ctrl+C 退出", classes="page-hint")
+        yield HintBar("↑↓ 选择 · 回车 进入 · 1-4 直达 · Esc/Ctrl+C 退出", classes="page-hint")
 
     def on_mount(self) -> None:
         ol = self.query_one("#home-list", OptionList)
-        ol.add_options(self._options())
+        self._marquee = MenuMarquee(
+            self, "home-list", [(label, desc) for _, label, desc in self.ITEMS]
+        )
+        ol.add_options(self._marquee.placeholder_options())
         ol.highlighted = 0
         ol.focus()
         self._apply_breakpoint()
+        self.call_after_refresh(self._marquee.start)
 
     def on_resize(self, event) -> None:
         self._apply_breakpoint()
+        if getattr(self, "_marquee", None) is not None:
+            self._marquee.sync()
 
     def _apply_breakpoint(self) -> None:
-        """宽度不足以容纳艺术字时降级为普通标题文本。"""
-        self.set_class(self.size.width < LOGO_WIDTH + 6, "-sm")
-
-    def _options(self):
-        for i, (_, label, desc) in enumerate(self.ITEMS, start=1):
-            t = Text()
-            t.append(f" {i}  ", style="bold")
-            t.append(f"{label:<14}", style="bold")
-            t.append(desc, style="dim")
-            yield Option(t)
+        """宽度不足以容纳艺术字时降级为普通标题文本；列宽跟随 logo。"""
+        small = self.size.width < LOGO_WIDTH + 6
+        self.set_class(small, "-sm")
+        self.query_one("#home-col").styles.width = None if small else home_col_width()
 
     def _open(self, key: str) -> None:
         from .config import ConfigScreen

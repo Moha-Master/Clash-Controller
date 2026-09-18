@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import ClassVar
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual import on
 from textual.binding import Binding
@@ -19,7 +20,7 @@ try:  # 不同 textual 版本 Option 导出位置不同
 except ImportError:  # pragma: no cover
     from textual.widgets._option_list import Option
 
-from .widgets import EDIT_HINT, STYLE_ERR
+from .widgets import EDIT_HINT, STYLE_ERR, HintBar
 
 # ---------------------------------------------------------------- 首页 logo
 
@@ -32,11 +33,16 @@ LOGO_LINES = [
     " ╚═════╝╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝   ╚═╝   ╚══════╝",
 ]
 
-LOGO_WIDTH = max(len(line) for line in LOGO_LINES)
+LOGO_WIDTH = max(cell_len(line.rstrip()) for line in LOGO_LINES)  # 随 LOGO_LINES 自动计算，换 logo 无需改别处
 
 
 def logo_text() -> Text:
-    return Text("\n".join(LOGO_LINES))
+    return Text("\n".join(line.rstrip() for line in LOGO_LINES))
+
+
+def home_col_width() -> int:
+    """首页栏列宽：跟随 logo，菜单文字更宽时以 40 列兜底。"""
+    return max(LOGO_WIDTH, 40)
 
 
 # ---------------------------------------------------------------- 页面骨架
@@ -78,7 +84,8 @@ class PageScreen(Screen):
         background: $panel;
         layout: horizontal;
     }
-    PageScreen #topbar Button {
+    PageScreen #topbar #top-back,
+    PageScreen #topbar #top-menu {
         margin-right: 2;
     }
     PageScreen .tb-left {
@@ -112,7 +119,7 @@ class PageScreen(Screen):
         overflow-y: hidden;
     }
     PageScreen .page-hint {
-        height: auto;
+        height: 1;
         padding: 0 1;
         color: $text-muted;
         background: $surface;
@@ -145,17 +152,17 @@ class PageScreen(Screen):
 
     def compose(self):
         with Horizontal(id="topbar"):
-            yield Button("◀ 返回", id="top-back", compact=True)
+            yield Button("◀ 返回", id="top-back")
             with Horizontal(classes="tb-left"):
                 yield Static(Text(self.TITLE, style="bold"), classes="tb-title")
                 yield Static(self.subtitle, classes="tb-sub", id="tb-sub")
             with Horizontal(classes="tb-right"):
                 yield from self.compose_toolbar()
                 if self.menu:
-                    yield Button("菜单 ▾", id="top-menu", compact=True)
+                    yield Button("菜单 ▾", id="top-menu")
         with Vertical(id="page"):
             yield from self.compose_page()
-        yield Static(self.HINT, classes="page-hint", id="page-hint")
+        yield HintBar(self.HINT, classes="page-hint", id="page-hint")
         if self.menu:
             with Vertical(id="page-menu"):
                 yield OptionList(id="menu-list")
@@ -272,7 +279,7 @@ class PageScreen(Screen):
         if not self.is_mounted:
             return
         try:
-            hint = self.query_one("#page-hint", Static)
+            hint = self.query_one("#page-hint", HintBar)
         except Exception:  # noqa: BLE001 — 组合早期尚未挂载
             return
         hint.update(EDIT_HINT if self._editing() else self.HINT)

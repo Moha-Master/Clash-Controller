@@ -11,8 +11,8 @@ from textual.widgets import Button, OptionList, Static
 from .. import __version__
 from ..config import load_profiles, save_profiles
 from ..deploy import default_endpoint_type
-from ..ui import LOGO_WIDTH, logo_text
-from ..widgets import ConfirmModal, FormField, FormModal, shorten
+from ..ui import LOGO_WIDTH, home_col_width, logo_text
+from ..widgets import ConfirmModal, FormField, FormModal, HintBar, MenuMarquee
 
 try:  # textual 各版本 Option 导出位置不同
     from textual.widgets.option_list import Option
@@ -20,8 +20,6 @@ except ImportError:  # pragma: no cover
     from textual.widgets._option_list import Option
 
 REQUIRED_FIELDS = ["endpoint_type", "config_directory", "use_sudo"]
-NAME_MAX = 14
-URL_MAX = 30
 
 
 def validate_profile(profile: dict) -> str | None:
@@ -210,6 +208,7 @@ class ProfileListScreen(Screen):
         super().__init__(classes="logo-page")
         self._profiles: list = []
         self._display: list = []
+        self._marquee = None
 
     # ------------------------------------------------------------ 组合
 
@@ -221,15 +220,17 @@ class ProfileListScreen(Screen):
                 yield Static(f"v{__version__}", id="home-version")
                 yield OptionList(id="pf-list")
                 with Horizontal(id="pf-actions"):
-                    yield Button("＋ 新增端点", id="add", variant="primary", compact=True)
-                    yield Button("编辑", id="edit", compact=True)
-                    yield Button("删除", id="delete", variant="error", compact=True)
-        yield Static(self.HINT, classes="page-hint")
+                    yield Button("＋ 新增端点", id="add", variant="primary")
+                    yield Button("编辑", id="edit")
+                    yield Button("删除", id="delete", variant="error")
+        yield HintBar(self.HINT, classes="page-hint")
 
     def on_mount(self) -> None:
+        self._marquee = MenuMarquee(self, "pf-list", [])
         self._load()
         self.query_one("#pf-list", OptionList).focus()
         self._apply_breakpoint()
+        self.call_after_refresh(self._marquee.start)
 
     def on_resize(self, event) -> None:
         self._apply_breakpoint()
@@ -237,8 +238,10 @@ class ProfileListScreen(Screen):
             self._rebuild()
 
     def _apply_breakpoint(self) -> None:
-        """宽度不足以容纳艺术字时降级为普通标题文本（与首页一致）。"""
-        self.set_class(self.size.width < LOGO_WIDTH + 6, "-sm")
+        """宽度不足以容纳艺术字时降级为普通标题文本；列宽跟随 logo。"""
+        small = self.size.width < LOGO_WIDTH + 6
+        self.set_class(small, "-sm")
+        self.query_one("#home-col").styles.width = None if small else home_col_width()
 
     # ------------------------------------------------------------ 数据加载
 
@@ -252,31 +255,28 @@ class ProfileListScreen(Screen):
     def action_refresh_page(self) -> None:
         self._load()
 
-    def _options(self) -> list[Option]:
-        if not self._display:
-            return [Option(Text("（暂无端点，Ctrl+N 创建）", style="dim"), disabled=True)]
+    def _rows(self) -> list[tuple[str, str]]:
         labels = {"local": "本地", "remote": "远程"}
-        opts = []
-        w = self.size.width or 120
-        col_width = min(72, w)
-        url_cap = max(10, col_width - 29 - 4)
-        for i, p in enumerate(self._display, start=1):
-            t = Text()
-            t.append(f" {i}  ", style="bold")
-            t.append(f"{shorten(str(p.get('name', '?')), NAME_MAX):<{NAME_MAX}}", style="bold")
-            t.append(" · ", style="dim")
-            t.append(f"{shorten(str(p.get('url', '')), url_cap):<{url_cap}}", style="dim")
-            t.append(" · ", style="dim")
-            t.append(labels.get(p.get("endpoint_type", ""), p.get("endpoint_type", "?")))
-            opts.append(Option(t))
-        return opts
+        rows = []
+        for p in self._display:
+            kind = labels.get(p.get("endpoint_type", ""), p.get("endpoint_type", "?"))
+            name = str(p.get("name", "?") or "?")
+            rows.append((name, f"{p.get('url', '')} · {kind}"))
+        return rows
 
     def _rebuild(self) -> None:
+        if self._marquee is None:
+            return
         self._display = list(self._profiles)
         ol = self.query_one("#pf-list", OptionList)
         prev = ol.highlighted
         ol.clear_options()
-        ol.add_options(self._options())
+        if self._display:
+            self._marquee.rows = self._rows()
+            ol.add_options(self._marquee.placeholder_options())
+            self._marquee.set_rows(self._rows())
+        else:
+            ol.add_options([Option(Text("（暂无端点，Ctrl+N 创建）", style="dim"), disabled=True)])
         ol.highlighted = prev if prev is not None and 0 <= prev < len(self._display) else (0 if self._display else None)
         n = len(self._profiles)
         self.query_one("#home-version", Static).update(f"v{__version__} · {n} 个端点")

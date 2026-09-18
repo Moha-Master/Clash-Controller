@@ -659,3 +659,106 @@ app.theme = "aliyun"
 - `max_scroll_y` / `scrollbar_size_vertical` 依赖布局时刻：`load_rows` 前=0、有滚动条后=2，两次 `fit` 结果不同。**只重设列宽+表头而不重建单元格** → 首屏右对齐列（空格 padding 基于旧 vis）与列宽错位；滚动/刷新触发整表重建后“自愈”。
 - 规则：垂直滚动条用**行数**确定性预判（`rows > region.height - 3`），列宽、`rcell` 表头、`rcell` 单元格在同一函数内基于同一份 `vis` 生成；布局稳定后用 `call_after_refresh` 再完整重建一次（幂等），禁止局部 patch。
 - `Pilot` 无 `shift_tab()`，用 `pilot.press("shift+tab")`。
+
+## 9. 第三轮统一：全局单行按钮与级联陷阱（8.2.8，三项目实测）
+
+### 9.1 Button 全局单行配方
+
+各 `app.tcss` 统一：
+
+```css
+Button {
+    height: 1;
+    border: none;
+    min-width: 0;
+    padding: 0 1;
+}
+Button:focus { border: none; text-style: bold reverse; }
+Button:disabled { text-opacity: 60%; }
+```
+
+- `compact=True` 从此多余（其效果被全局覆盖），调用处不再传；Input/Select 的 compact 仍需显式传。
+- `height: 1` 时 border 会吃掉整行，必须 `border: none`；焦点态改用 `text-style: reverse`。
+- 变体按钮（primary/error/success/warning）的语义色即背景色，单行下依旧成立。
+
+### 9.2 app CSS 压过 widget DEFAULT_CSS（同属性级联）
+
+- 同一属性上，**app.tcss 的规则始终赢过 widget `DEFAULT_CSS`**，与选择器特异度无关。
+- 历史事故：全局 `Button { padding: 0 1 }` 覆盖 MonthPicker `DEFAULT_CSS` 里 `.mp-m { padding: 0; width: 4 }`，内容宽变 0，`rich.chop_cells` `range(0, n, 0)` 崩溃（渲染期 ValueError，不是启动期报错，很难归因）。
+- 结论：写全局控件规则前先 grep 各 widget DEFAULT_CSS 中对**该控件**的 `width/padding/margin/height` 定制，并把控件自身宽度改为「文本宽 + padding 2 + line-pad 2」。
+
+### 9.3 后代选择器命中“借住”组件
+
+- `#topbar Button { margin-right: 2 }` 会命中所有渲染进顶栏的按钮——包括顶栏槽位里组件（MonthPicker）的**内部按钮**；id 前缀的特异度还压过组件自己的类规则。
+- 顶栏间距规则必须限定到具体 id（`#topbar #top-back, #topbar #top-menu`），不要用 `#topbar <元素>`。
+
+## 10. 跑马灯提示栏与动态 Logo（第三轮优化实测）
+
+### 10.1 跑马灯组件（HintBar）配方
+
+Textual 的 `Static` 在 `width: 100%` 时即便设置 `no_wrap=True` 也会将内容静默换行。实现 LED 跑马灯必须使用 `ScrollableContainer` 包裹 `width: auto` 的 `Static`。
+
+```python
+class HintBar(ScrollableContainer):
+    DEFAULT_CSS = """
+    HintBar { height: 1; overflow-x: auto; overflow-y: hidden; scrollbar-size: 0; }
+    HintBar .hint-text { width: auto; height: 1; }
+    """
+    def _tick(self):
+        total, view = self.virtual_size.width, self.size.width
+        if total <= view or self.hovered:
+            self.scroll_x = 0
+            return
+        x = int(self.scroll_x) + 1
+        if x > total - view + 3: x = 0
+        self.scroll_x = x
+```
+
+- **容器高度**：在 `app.tcss` 中必须显式设置 `.page-hint { height: 1 }`，否则 `PageScreen` 的 `height: auto` 默认规则会压过组件的 `DEFAULT_CSS`。
+- **滚动条隐藏**：`scrollbar-size: 0` 在 8.2.8 中有效，可完全隐藏滚动条但不影响程序化滚动。
+
+### 10.2 动态 Logo 与版本号对齐
+
+为了让版本号始终对齐 Logo 右侧，首页采用了「动态容器宽」策略：
+
+1. `ui.py` 使用 `rich.cells.cell_len` 动态计算 `LOGO_WIDTH`。
+2. 首页 `_apply_breakpoint` 时，若非窄终端，显式设置 `self.query_one("#home-col").styles.width = max(LOGO_WIDTH, 40)`。
+3. 版本号组件使用 `text-align: right`，从而在不同 Logo 宽度下均能精准对齐。
+
+### 10.3 统一圆角边框
+
+`DataTable` 的 `border: round` 会在 `:focus` 态被默认规则覆盖。必须显式设置：
+```css
+.tbl:focus { border: round $primary; }
+```
+从而保证在任何状态下，页面主要容器（`.panel`）与表格（`.tbl`）的视觉风格统一。
+
+## 11. 第四轮打磨实测：Logo 对齐、菜单跑马灯、提示栏回滚（8.2.8）
+
+### 11.1 Logo 逐行错位根因：trailing space + text-align: center
+
+- `Static` 的 `text-align: center` 会**按每行裁剪后的宽度独立居中**。若 `LOGO_LINES` 各行带不同数量的尾随空格（或补空格到统一宽度），中行与底行会被各自居中到不同起点，肉眼即「最底下一行错位」。
+- 正确做法：
+  1. `logo_text()` 对每行 `rstrip()`（去掉尾随空格）；
+  2. `LOGO_WIDTH = max(cell_len(line.rstrip()) for line in LOGO_LINES)`；
+  3. `#home-banner { text-align: left; }`，整块靠 `#home-col`（`align: center middle`）居中——所有行共用同一左缘，不再逐行错位。
+- litellm 之所以「正常」，是其 logo 各行无尾随空格、宽度一致，逐行居中恰好等价。
+
+### 11.2 版本号对齐 Logo 右缘
+
+`#home-col` 宽度必须在运行时写回：`col.styles.width = max(LOGO_WIDTH, 40)`（`ui.home_col_width()`），版本行 `text-align: right` 即对齐 Logo 右缘。不要用 CSS 写死 72：不同项目 logo 宽度不同（如 55），写死会让版本号离 Logo 右缘很远。
+
+### 11.3 OptionList 菜单行「描述右对齐 + 超宽跑马灯」
+
+- `Option(Text(长文本))` 默认会**换行**撑高选项。要单行显示必须 `Text(..., no_wrap=True)`（可配 `overflow="crop"` / `"ellipsis"`）。
+- OptionList 可容纳宽度 = `content_size.width - (show_vertical_scrollbar ? scrollbar_size_vertical : 0)`；选项首列还有 2 格内边距。
+- 右对齐：`" " * (room - cell_len(desc)) + desc`；超宽：`marquee_window()` 取循环窗口 + 定时 `replace_option_prompt_at_index()`（**不会重置 highlighted**）。
+- 封装为 `widgets.MenuMarquee`：标签 `shorten(..., label_width)` 定宽左对齐，描述区域右对齐 / 来回跑马灯；`set_rows()` 支持数据变化后刷新。
+
+### 11.4 HintBar 来回滚动
+
+单向循环改为「到达端点后 `HOLD` 拍（12 × 0.25s ≈ 3s）再反向」，用 `_direction` + `_hold` 两个状态位即可；`update()` 时重置方向与停留。
+
+### 11.5 容器内的 OptionList 必须去掉默认边框
+
+`OptionList.DEFAULT_CSS` 自带 `border: tall $border-blurred`（直角框）。放进 `.panel` 圆角容器时必须显式 `border: none; background: transparent`，否则圆角容器内套一个直角方框（历史案例：litellm `#mh-list`）。

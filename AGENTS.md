@@ -2,7 +2,7 @@
 
 # 第一部分 · UI 开发统一规范
 
-> 本部分在 aliyun-controller 与 `../clash-controller` 两项目间**保持同一份文本**（个别差异会显式标注）。任何一侧修订必须同步另一侧，保证隔壁项目的 Agent 拿到相同标准。
+> 本部分在 aliyun-controller、`../clash-controller`、`../litellm-controller` 三项目间**保持同一份文本**（个别差异会显式标注）。任何一侧修订必须同步其余项目，保证各项目的 Agent 拿到相同标准。
 > 依据均为本地 Textual 8.2.8 实测结论，逐条验证记录见 `docs/textual-dev-guide.md`。
 
 ## 1. 技术栈与代码质量
@@ -32,26 +32,32 @@
 - 功能页一律继承 `ui.PageScreen`，结构固定：
   顶栏 `#topbar`（左 `◀ 返回` 按钮 + Title/SubTitle 靠左；右侧 `compose_toolbar()` 控件 + 可选折叠菜单按钮）→ `#page`（`height: 1fr; overflow-y: hidden`）→ 底部 `.page-hint` 提示栏贴底。
 - 子类只写：`TITLE` / `HINT`（及可选 `SUBTITLE`）、`compose_page()`、`compose_toolbar()`、`reload_page()`；键位/Esc/滚动自动获得。
-- 副标题动态更新用 `set_subtitle()`；根屏（启动页/选择页）若需与首页一致的居中版式，可脱离 PageScreen 采用 `Screen` + `.logo-page`（`ui.LOGO_LINES` + `OptionList`，键位/Esc/Ctrl+C 需自绑）；亦可复用 PageScreen 覆写 `action_page_back()` 为 `app.exit()`，并把返回按钮 label 改成 `◀ 退出`。
+- 副标题动态更新用 `set_subtitle()`；根屏（启动页/选择页）若需与首页一致的居中版式，采用 `Screen` + `.logo-page`（`ui.LOGO_LINES` + `OptionList`）；亦可复用 PageScreen 覆写 `action_page_back()` 为 `app.exit()`，并把返回按钮 label 改成 `◀ 退出`。
 - 折叠菜单 `self.menu = [(label|callable, callback, danger)]`：语义对齐 Android ⋮，**只放次要/低频项**；主要操作必须以容器内按钮常驻可见；`menu` 为空时菜单按钮自动不渲染；危险项文本染红。
-- 首页：`ui.LOGO_LINES` 艺术字居中 + 版本副标题右对齐 + 菜单项居中且文本左对齐 + 底部提示栏。窄终端在 `on_resize` 判断 `width < LOGO_WIDTH + 6` 挂 `-sm` 类降级为普通文本。整组居中用容器 `align: center middle`（`content-align` 不定位子件）。
+- 首页：`ui.LOGO_LINES` 艺术字（`#home-banner` **`text-align: left`**，整块靠 `#home-col` 居中，避免逐行居中造成错位）+ 版本副标题右对齐 + 菜单项 + 底部提示栏。列宽由 `ui.home_col_width()`（= `max(LOGO_WIDTH, 40)`，`LOGO_WIDTH` 由 `cell_len(line.rstrip())` 自动计算）在 `on_resize` 动态写回 `#home-col`，版本号因此始终对齐 Logo 右缘。窄终端 `width < LOGO_WIDTH + 6` 挂 `-sm` 降级为普通文本。整组居中用容器 `align: center middle`（`content-align` 不定位子件）。
+- 首页菜单描述**右对齐**；描述超宽时用 `widgets.MenuMarquee` 在选项区域内来回跑马灯（不换行）。
 
 ## 5. 内容区版式与滚动
 
-- 主模式「**小容器 + 大容器**」：小容器 `.panel`（`padding: 1 2; border: round`）或 `.filter-row` 行放筛选/排序/主操作按钮（按钮 `compact=True`）；大容器是表格（`make_table()` 自带 `.tbl` 类 → `height: 1fr`）。排列方向可变（上大下小 / 上小下大 / 左右）。
+- 主模式「**小容器 + 大容器**」：小容器 `.panel`（`padding: 1 2; border: round`）或容器内 `.filter-row` 行放筛选/排序/主操作按钮；大容器是表格（`make_table()` 自带 `.tbl` 类 → `height: 1fr`）。排列方向可变（上大下小 / 上小下大 / 左右）。
+- **一切内容皆入容器**：功能页所有可见组件必须包裹在 `.panel` 或 `.tbl` 内，严禁直接在 `#page` 下漂浮。
 - 只读状态行用 `.kv-row/.kv-label/.kv-value`（标签定宽、值加粗）。
 - **外层永不滚动**：`#page` overflow hidden；固定行 `height: auto`。`Vertical`/`Horizontal` 默认 `height: 1fr`，放进 auto 上下文必须显式 `height: auto`。全页只允许表格一个滚动条。
 - Home/End/PgUp/PgDn 由 PageScreen 绑定（不加 priority，Input 聚焦时让位），目标 `_scroller()`：优先 `#page` 内第一个 VerticalScroll，否则 `#page`；表格滚动走 DataTable 自身键位。
 
 ## 6. 模态（widgets.py）
 
-- 全部为 `ModalScreen[T]`，统一三段式：`.modal-title`（`border-bottom: hkey`）→ 内容区 → `.btn-row`（`border-top: hkey; dock: bottom; align-horizontal: right`）。
+- **`Button` 全局单行**：各项目 `app.tcss` 统一 `Button { height: 1; border: none; min-width: 0; padding: 0 1 }` + `Button:focus { text-style: bold reverse }`（等价于旧 `compact=True`，调用处不再传）；变体色（primary/error/…）即背景色。**同属性下 app.tcss 元素规则会压过一切 widget `DEFAULT_CSS` 类/ID 规则**，加全局控件样式前必须审查小尺寸控件（见 §12）。
+- 全部模态为 `ModalScreen[T]`，统一三段式：`.modal-title`（`border-bottom: hkey`）→ 内容区 → `.btn-row`（`border-top: hkey; dock: bottom; align-horizontal: right`）。
 - 按钮语义：default=一般、primary=推荐、error=危险；顺序 `[取消] [主操作] … [危险放最右]`。
 - `ConfirmModal`：回车=确认；不可逆操作 `default_yes=False`（确认按钮变 error 色、回车不再直接放行按钮，仅按钮点击生效）。
 - `InputModal`：单行 + validator，留空=不更改语义由调用方决定；`[取消][确定]`。
-- `FormModal`：字段 `kind: text | password | choice | switch | note`（clash 另有 `textarea` 供长文本如私钥）。Input/Select 一律 `compact=True`；`.frm-row { margin-bottom: 1 }`、无 hint 行高恰好 1；`.modal-box { min-height: 24 }`；底部错误行 `#frm-error`（validator 失败提示且不关闭）。
-  - 密码框：占位符显示脱敏原值，**留空 = 保持原值**。
+- `FormModal`：字段 `kind: text | password | choice | switch | note`（clash/litellm 另有 `textarea` 供长文本如私钥；litellm 另有 `browse`：Input + 「选择…」弹 `PickModal` 回填）。
+- 字段过多的复合表单（如模型参数、路由组成员勾选）用 **sheet 式模态**：`ModalScreen` + `.modal-box` 定宽（≤104）/ `height 88~90%` + `.modal-title` + `VerticalScroll` 内容 + docked `.btn-row`；不拆多步问询弹窗串联。Input/Select 一律 `compact=True`；`.frm-row { margin-bottom: 1 }`、无 hint 行高恰好 1；`.modal-box { min-height: 24 }`；底部错误行 `#frm-error`（validator 失败提示且不关闭）。
+  - 密码框：占位符使用 `widgets.mask_secret()` 脱敏显示，**留空 = 保持原值**。
   - 布尔开关：表单内 `kind="switch"`（Switch 用 `border: none; height: 1` 压单行），**不要**独立动作按钮、不要 Checkbox。
+  - **`Switch` / `Checkbox` / `RadioButton` 一律全局压成一行**（`height: 1; border: none; padding: 0 1`，focus 用 background-tint）：litellm 在 `app.tcss` 全局规则；aliyun/clash 在 `.frm-field` / `.kv-row` 上下文同名规则。
+  - `extra_buttons`（按按钮 id 返回结果）与功能型按钮必须互斥：如 litellm 的 `browse`「选择…」按钮在 `on_button_pressed` 里按 `.frm-browse` 类名排除，否则会被当额外按钮误 dismiss（历史事故：编辑 Upstream provider 崩溃）。
   - 焦点：`on_mount` 聚焦第一个字段；Tab/Shift+Tab 轮切（Screen 原生焦点链）；Enter（Input.Submitted）= 提交；Esc / Ctrl+C = 取消。
 - `OutputModal`：只读长文本，VerticalScroll + `[关闭]`。
 - **不要用行内 `display` 切换做就地编辑**——隐藏 Input 不进 Tab 焦点链、编辑态难以退出（已被否，用 FormModal）。
@@ -76,26 +82,26 @@
 - **提示栏只写本页真实有效的键**：`.page-hint` / `HINT` 必须与本页 `BINDINGS` + 继承绑定逐条对应，不得出现该页不可用的键。
 - `Ctrl+C` 在 `Input` / `TextArea` 聚焦时仍是「复制文本」（Textual 框架行为），其余位置等价于 `Esc`。
 
-### 7.1 两项目键位设计对照
+### 7.1 三项目键位设计对照
 
 > 原则：能对齐就对齐；确无对应操作/确实多出操作的，允许差异并在此登记。
 
-| 场景 / 页面 | aliyun-controller | clash-controller |
-|---|---|---|
-| App 全局 | `Ctrl+Q` 任意退出；`Tab/Shift+Tab` 焦点轮切 | 同左 |
-| 功能页基类 PageScreen | `Esc`/`Ctrl+C` 返回、`Ctrl+R` 刷新、`Home/End/PgUp/PgDn` 滚动 | 同左 |
-| 首启 / 根屏 | `SetupWizardScreen`：`Enter` 提交、`Esc`/`Ctrl+C` 取消并退出 | `ProfileListScreen`：`↑↓` 移动、`Enter`/单击 连接、`1-9` 直连、`Ctrl+N/E/D` 增删改、`Ctrl+R` 刷新、`Esc`/`Ctrl+C` 退出 |
-| 主菜单 | `HomeScreen`：`↑↓`、`Enter`、`1-5` 直达、`Esc`/`Ctrl+C` 退出 | `HomeScreen`：`↑↓`、`Enter`、`1-4` 直达、`Esc`/`Ctrl+C` 退出（切换端点走菜单项 `4`） |
-| 域名列表 | `DomainListScreen`：`↑↓`、`Enter`/单击进入、`/` 搜索、`Ctrl+R`、`Esc`/`Ctrl+C` 返回（无 `Ctrl+N/E/D`） | —（无对应页） |
-| 条目列表 | `RecordListScreen`：`↑↓`、`Enter`/单击编辑、`/` 搜索、`Ctrl+N/E/D`、`Ctrl+R`、`Esc`/`Ctrl+C` 返回 | `ConfigScreen`：`↑↓`、`Enter`/单击部署、`Ctrl+N/E/D`、`Ctrl+R`、`Esc`/`Ctrl+C` 返回（无搜索框故无 `/`） |
-| 监控 / 查看 | `TrafficScreen` / `SummaryScreen`：`◀▶` 切月、`Ctrl+R`、`Esc`/`Ctrl+C` 返回、滚轮浏览 | `OverviewScreen`：`↑↓/PgUp/PgDn` 滚动连接表、`Ctrl+R`、`Esc`/`Ctrl+C` 返回（无账期故无 `◀▶`） |
-| 设置 | `SettingsScreen`：点击条目/`Enter` 开 FormModal 保存、`Esc`/`Ctrl+C` 返回 | `SettingsScreen`：`Tab` 轮切、`Enter` 操作控件即时生效、`Ctrl+R`、`Esc`/`Ctrl+C` 返回（无保存动作） |
-| 日志 | ➖ 无独立日志页 | `LogScreen`：`↑↓/PgUp/PgDn` 滚动、`Ctrl+R` 重载、`Esc`/`Ctrl+C` 返回 |
-| 模态 | `Enter` 提交/确认、`Esc`/`Ctrl+C` 取消关闭、`Tab` 轮切字段 | 同左 |
-| 文本编辑（Input/TextArea） | 控件原生编辑键优先；`Ctrl+R` 刷新禁用；底部提示栏切 `EDIT_HINT` | 同左 |
+| 场景 / 页面 | aliyun-controller | clash-controller | litellm-controller |
+|---|---|---|---|
+| App 全局 | `Ctrl+Q` 任意退出；`Tab/Shift+Tab` 焦点轮切 | 同左 | 同左 |
+| 功能页基类 PageScreen | `Esc`/`Ctrl+C` 返回、`Ctrl+R` 刷新、`Home/End/PgUp/PgDn` 滚动 | 同左 | 同左 |
+| 首启 / 根屏 | `SetupWizardScreen`：`Enter` 提交、`Esc`/`Ctrl+C` 取消并退出 | `ProfileListScreen`：`↑↓` 移动、`Enter`/单击 连接、`1-9` 直连、`Ctrl+N/E/D` 增删改、`Ctrl+R` 刷新、`Esc`/`Ctrl+C` 退出 | `SetupWizardScreen`（模态向导）：`Enter` 提交、`Esc`/`Ctrl+C` 取消并退出 |
+| 主菜单 | `HomeScreen`：`↑↓`、`Enter`、`1-5` 直达、`Esc`/`Ctrl+C` 退出 | `HomeScreen`：`↑↓`、`Enter`、`1-4` 直达、`Esc`/`Ctrl+C` 退出（切换端点走菜单项 `4`） | `HomeScreen`：`↑↓`、`Enter`、`1-4` 直达、`Esc`/`Ctrl+C` 退出 |
+| 列表页（带搜索） | `DomainListScreen` / `RecordListScreen`：`↑↓`、`Enter`/单击、`/` 搜索、`Ctrl+N/E/D`、`Ctrl+R`、`Esc` 返回 | `ConfigScreen`：同左但无搜索框故无 `/` | `ModelListScreen` / `RoutingListScreen`：`↑↓`、`Enter`/单击、`/` 搜索、`Ctrl+N`、`Ctrl+R`、`Esc` 返回；`DefaultEditorScreen`：`Ctrl+N`＋[保存/重置]按钮 |
+| 监控 / 查看 | `TrafficScreen` / `SummaryScreen`：`◀▶` 切月、`Ctrl+R`、`Esc` 返回、滚轮浏览 | `OverviewScreen`：`↑↓/PgUp/PgDn` 滚动、`Ctrl+R`、`Esc` 返回（无账期故无 `◀▶`） | `BuildScreen`：`Ctrl+R` 重新构建、[导出 JSON] 按钮、`Esc` 返回 |
+| 设置 | `SettingsScreen`：点击条目/`Enter` 开 FormModal 保存、`Esc` 返回 | `SettingsScreen`：`Tab` 轮切、`Enter` 操作控件即时生效、`Ctrl+R`（无保存动作） | `SettingsScreen`：单击/`Ctrl+E` 编辑 Upstream、`Ctrl+N/D`、`Esc` 返回；`ScriptsScreen`：`/` 搜索、`Ctrl+N` 新建、单击 开脚本设置 |
+| 日志 | ➖ 无独立日志页 | `LogScreen`：`↑↓/PgUp/PgDn` 滚动、`Ctrl+R` 重载、`Esc` 返回 | ➖ 无独立日志页 |
+| 模态 | `Enter` 提交/确认、`Esc`/`Ctrl+C` 取消关闭、`Tab` 轮切字段 | 同左 | 同左；另有 `PickModal`（输入筛选 + 回车）与 sheet 式大表单（`ModelFormScreen` 等，按钮提交，无隐式回车） |
+| 文本编辑（Input/TextArea） | 控件原生编辑键优先；`Ctrl+R` 刷新禁用；底部提示栏切 `EDIT_HINT` | 同左 | 同左 |
 
 - 单字母键（`1-9`/`/`）只在**无输入框**页面保留；有 Input 的页面一律用 `Ctrl` 组合键或方向键。
-- `1-9` 的位数按各项目菜单/列表实际条目上限确定（aliyun 1-5、clash 首页 1-4、clash 端点页 1-9）。
+- `1-9` 的位数按各项目菜单/列表实际条目上限确定（aliyun 1-5、clash 首页 1-4 / 端点页 1-9、litellm 首页 1-4 / 参数主页 1-3）。
+- litellm 有搜索框的列表页（`ScriptsScreen`/`DefaultEditorScreen`）只用 `Ctrl+N` 与容器内按钮，不再占用会被 Input 抢占的 `Ctrl+E`/`Ctrl+D`（§7.2 约束）。
 
 ### 7.2 文本编辑模式（焦点在 Input / TextArea）
 
@@ -125,14 +131,14 @@
 - 列宽：`fit_table_columns(table, weights, rows=即将装载的行数)` 按权重瓜分容器宽（返回值含每列左右 2 空格 padding）。
 - **列宽/表头/单元格必须同一帧同源生成**：垂直滚动条用行数确定性预判（`rows > region.height - 3` 预留 2 列），不要依赖 `max_scroll_y`（装载前后会变）；布局稳定后整表重建一次（`call_after_refresh`），勿只改列宽不重建单元格。
 - 列宽在装载函数与 `on_resize` 里重算（`on_resize` 直接定义即可，`Screen` 没有可 `super()` 的默认实现）。
-- `.tbl` 加 `overflow-x: hidden` 兜底防横向滚动条。
+- `.tbl` 加 `overflow-x: hidden` 兜底防横向滚动条；`:focus` 态边框也必须保持圆角（`.tbl:focus { border: round $primary }`），否则聚焦时出现直角，与 `.panel` 风格割裂。
 
 ## 10. 浮层（页内弹层）三要素
 
 - 自定义 `Message` 类要能被 `@on(..., "#id")` 匹配必须提供 `control` 属性（返回 `self._sender`）。
 - 浮层父容器必须声明 `layers: base overlay`，否则鼠标命中下层组件。
 - 浮层本体：`position: absolute; overlay: screen; layer: overlay; display` 切换；定位用 `styles.offset`；右缘控件的浮层右对齐展开并防越界。
-- Button 布局步进含 `line-pad`（默认 1，即 +2）：紧凑网格必须同时定 `width`/`min-width` 并加宽容器。
+- Button 内容宽 = 区域宽 − padding(2) − `line-pad`(1×2)；`line-pad: 0` **非法**（须 ≥1），紧凑网格按钮按 `文本宽 + 4` 定 `width`/`min-width` 并加宽容器。
 
 ## 11. 取数与并发逻辑
 
@@ -149,10 +155,14 @@
 - `cell_len` 在 `rich.cells`（复数模块名）。
 - 自定义 `DataTable` 子类重写 `_on_click`：Textual 沿 MRO 逐类派发，接管与回落两条路径都要 `event.prevent_default()`，否则消息双发/双执行。
 - 屏幕方法不要命名 `_render`（覆盖 `Widget._render` 渲染崩溃）。
+- **级联优先级**：app.tcss（含 Screen CSS）对同一属性**始终压过** widget 自身 `DEFAULT_CSS`，与选择器特异度无关——给通用控件写全局规则前，先 grep 各控件 DEFAULT_CSS 里对该控件的 width/padding 定制（历史事故：全局 `Button{padding:0 1}` 掀翻 MonthPicker 3 格小按钮，rich `chop_cells` 除零崩溃）。
+- `#topbar Button { margin }` 这类**后代选择器**会命中挂在顶栏里的组件内部按钮（MonthPicker 弹层等），且 id 前缀特异度压过 widget 类规则；顶栏间距规则必须限定到具体 id（`#topbar #top-back`）。
+- `OptionList` 的 `DEFAULT_CSS` 自带 `border: tall $border-blurred`（直角框）。放进 `.panel` 圆角容器时必须显式 `border: none; background: transparent`（如 `#mh-list`），否则容器内套一个直角方框。
+- 首页 Logo 每行**不要保留尾随空格**：`logo_text()` 对每行 `rstrip()`、`LOGO_WIDTH` 用 `cell_len(line.rstrip())`；否则 `text-align: center` 会按各行裁剪后的宽度独立居中，出现「某一行错位」。
 - `textual.widgets` 各版本导出位置不同，`Option` 用 try/except import。
 - `Select` 内部 `#label` 是 `width: 1fr`：放进 `Horizontal` 行且不给显式宽度时，auto 宽度会把整行剩余空间全吃掉，`▼` 箭头溢出容器被裁剪——行内 Select 必须显式定宽（如设置页模式 `width: 12`）。
 
-## 13. 验证规范（两项目同一模板）
+## 13. 验证规范（三项目同一模板）
 
 - `App.run_test(size=(120, 40))` 宽屏 + `(LOGO_WIDTH+6 以下, 28)` 窄屏各跑一遍。
 - 配置目录指向 `tempfile.mkdtemp()`（写最小配置），服务层用 Fake 对象整体屏蔽网络。
@@ -161,13 +171,15 @@
 
 ## 14. 跨项目组件对照
 
-| 组件 | aliyun-controller | clash-controller |
-|---|---|---|
-| `ui.PageScreen` / `ui.LOGO_*` | ✅ | ✅ |
-| `ui.MonthPicker` / `ui.QuotaBar` | ✅（账期/额度场景） | ➖ 无场景未搬运，需要时从 aliyun `ui.py` 移植 |
-| `widgets.ClickTable` / `shorten` / `rcell` / `fit_table_columns` | ✅ | ✅ |
-| `widgets` 四模态 | ✅（FormModal 无 textarea） | ✅（FormModal 多 `textarea` kind） |
-| 模糊筛选 `filter_fuzzy` | ✅ | ✅ |
+| 组件 | aliyun-controller | clash-controller | litellm-controller |
+|---|---|---|---|
+| `ui.PageScreen` / `ui.LOGO_*` | ✅ | ✅ | ✅ |
+| `ui.MonthPicker` / `ui.QuotaBar` | ✅（账期/额度场景） | ➖ 无场景未搬运 | ➖ 无场景未搬运 |
+| `widgets.ClickTable` / `HintBar` / `MenuMarquee` / `shorten` / `rcell` / `fit_table_columns` | ✅ | ✅ | ✅ |
+| `widgets` 四模态 | ✅（FormModal 无 textarea） | ✅（FormModal 多 `textarea` kind） | ✅（FormModal 多 `textarea` + `browse` 字段） |
+| `PickModal` / `MultiPickModal` 选择弹窗 | ➖ | ➖ | ✅（litellm 特有：项目选择 / 模糊多选） |
+| sheet 式大表单（ModalScreen） | ➖ | ➖（用 FormModal 足够） | ✅（ModelFormScreen / GroupFormScreen / ModelMetaFormScreen） |
+| 模糊筛选 `filter_fuzzy` | ✅ | ✅ | ✅ |
 
 ---
 
@@ -217,11 +229,11 @@ clash_controller/
 
 ## 本项目界面实例（对第一部分规范的映射）
 
-- 根屏 `ProfileListScreen`：Screen 变体（居中 + CLASH 大 logo + 选项列表 OptionList，按数字 1-9 快捷连接，`[＋ 新增端点][编辑][删除]` 按钮居中；`Esc`/`Ctrl+C` 退出，不绑 `q`）。
-- 首页：CLASH logo（LOGO_WIDTH=40，窄于 46 降级）+ 4 菜单项（概览/配置/设置/切换端点），数字 1-4、`Esc`/`Ctrl+C` 退出（切换端点走菜单项 `4`），不绑 `q`。
+- 根屏 `ProfileListScreen`：Screen 变体（居中 + CLASH 大 logo + 选项列表 OptionList，按数字 1-9 快捷连接，`[＋ 新增端点][编辑][删除]` 按钮居中；端点名 shorten 到 14 列、`URL · 类型` 描述右对齐超宽跑马灯；`Esc`/`Ctrl+C` 退出，不绑 `q`）。
+- 首页：CLASH logo（`LOGO_WIDTH` 自动计算，窄于 `LOGO_WIDTH+6` 降级）+ 4 菜单项（概览/配置/设置/切换端点），描述右对齐、超宽跑马灯；数字 1-4、`Esc`/`Ctrl+C` 退出（切换端点走菜单项 `4`），不绑 `q`。
 - 概览页：上 `.panel` 一组 kv 行（版本/流量/内存/连接），数据来自流式与每秒轮询；下接活动连接表 DataTable（每秒刷新）。
 - 配置页：`.filter-row` [拉取并部署][＋ 新增][编辑][删除][重载配置] + ClickTable，**单击行 = 拉取比对部署**（后续 ConfirmModal 把关）；列 cap 名称 24 / url 100。
-- 设置页：顶栏副标题为当前端点名称。面板 kv 行含 `TUN [Switch]` 与 `模式 [Select]` 即时控制项（无需保存）；下方 [重载 GEO] 按钮与重启/升级类按钮组；「查看应用日志」在右上角 ⋮ 折叠菜单。
+- 设置页：顶栏副标题为当前端点名称。首个 `.panel` 容器含 `TUN [Switch]` 与 `模式 [Select]` 即时控制项（无需保存）；第二个 `.panel`（核心操作 / 重启升级按钮组）与表格/内容同列；「查看应用日志」在右上角 ⋮ 折叠菜单。
 - 日志页：`RichLog(classes="tbl")`，reload_page 全量重放 `app.app_logs`。
 - 编辑端点：FormModal（url/密钥 password/名称/类型 choice/目录/两个 switch）；remote 追加 SSHFormModal（choice 认证方式 + 条件校验 + 私钥 textarea）。
 - 文本编辑模式：`ui.PageScreen` 焦点在 Input/TextArea 时把 `#page-hint` 切为 `EDIT_HINT` 并禁用 `Ctrl+R`；`FormModal`/`InputModal` 底部 `#frm-hint`/`#im-hint` 按焦点类型切换 `HINT_FORM`/`HINT_FORM_EDIT`/`HINT_FORM_TA`（详见第一部分 §7.2）。

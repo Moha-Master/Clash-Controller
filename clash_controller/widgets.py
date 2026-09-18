@@ -11,10 +11,15 @@ from rich.cells import cell_len
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, ScrollableContainer, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Input, Label, Select, Static, Switch, TextArea
+from textual.widgets import Button, DataTable, Input, Label, OptionList, Select, Static, Switch, TextArea
+
+try:  # textual 各版本 Option 导出位置不同
+    from textual.widgets.option_list import Option
+except ImportError:  # pragma: no cover
+    from textual.widgets._option_list import Option
 
 # ---------------------------------------------------------------- 文案与配色
 
@@ -175,7 +180,7 @@ class InputModal(ModalScreen[str | None]):
                 if self.hint_text:
                     yield Static(self.hint_text, classes="im-hint")
                 yield Static("", classes="im-error", id="im-error")
-                yield Static("", classes="page-hint", id="im-hint")
+                yield HintBar("", classes="page-hint", id="im-hint")
             with Horizontal(classes="btn-row"):
                 yield Button("取消", id="im-cancel", variant="default")
                 yield Button("确定", id="im-ok", variant="primary")
@@ -194,7 +199,7 @@ class InputModal(ModalScreen[str | None]):
         if not self.is_mounted:
             return
         editing = isinstance(self.app.focused, (Input, TextArea))
-        self.query_one("#im-hint", Static).update(HINT_FORM_EDIT if editing else HINT_FORM)
+        self.query_one("#im-hint", HintBar).update(HINT_FORM_EDIT if editing else HINT_FORM)
 
     def _submit(self) -> None:
         val = self.query_one("#im-input", Input).value.strip()
@@ -280,7 +285,7 @@ class FormModal(ModalScreen["dict | None"]):
                                 yield Input(
                                     value=f.value if f.kind == "text" else "",
                                     password=(f.kind == "password"),
-                                    placeholder=(f.value if f.kind == "password" else f.placeholder),
+                                    placeholder=(mask_secret(f.value) if f.kind == "password" else f.placeholder),
                                     compact=True,
                                     id=f"in-{f.name}",
                                 )
@@ -302,7 +307,7 @@ class FormModal(ModalScreen["dict | None"]):
                             if f.hint:
                                 yield Static(f.hint, classes="frm-note")
             yield Static("", classes="frm-err", id="frm-error")
-            yield Static("", classes="page-hint", id="frm-hint")
+            yield HintBar("", classes="page-hint", id="frm-hint")
             with Horizontal(classes="btn-row"):
                 yield Button("取消", id="frm-cancel", variant="default")
                 yield Button(self.ok_label, id="frm-ok", variant="primary")
@@ -333,7 +338,7 @@ class FormModal(ModalScreen["dict | None"]):
             text = HINT_FORM_EDIT
         else:
             text = HINT_FORM
-        self.query_one("#frm-hint", Static).update(text)
+        self.query_one("#frm-hint", HintBar).update(text)
 
     def _collect(self) -> "dict | None":
         """收集表单值；校验失败时写入错误信息并返回 None。可在子类扩展。"""
@@ -425,6 +430,180 @@ class OutputModal(ModalScreen[None]):
 
 # ---------------------------------------------------------------- 表格辅助
 
+class HintBar(ScrollableContainer):
+    """单行操作提示栏：内容宽于容器时，像 LED 屏一样来回滚动（端点停留约 3s）。"""
+
+    DEFAULT_CSS = """
+    HintBar {
+        height: 1;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-size: 0 0;
+    }
+    HintBar .hint-text {
+        width: auto;
+        height: 1;
+    }
+    """
+
+    TICK = 0.25
+    HOLD = 12  # 到达端点后停留的拍数（12 x 0.25s = 3s）
+
+    def __init__(self, text: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._text = text
+        self._direction = 1
+        self._hold = 0
+
+    def compose(self):
+        yield Static(Text(self._text, no_wrap=True), classes="hint-text")
+
+    def on_mount(self) -> None:
+        self.set_interval(self.TICK, self._tick)
+
+    def update(self, text: str) -> None:
+        self._text = text
+        self._direction = 1
+        self._hold = 0
+        if self.is_mounted:
+            self.query_one(".hint-text", Static).update(Text(text, no_wrap=True))
+            self.scroll_x = 0
+
+    def _tick(self) -> None:
+        total = self.virtual_size.width
+        view = self.size.width
+        if total <= view:
+            if self.scroll_x:
+                self.scroll_x = 0
+            return
+        if self._hold > 0:
+            self._hold -= 1
+            return
+        end = total - view
+        x = int(self.scroll_x) + self._direction
+        if x >= end:
+            x = end
+            self._direction = -1
+            self._hold = self.HOLD
+        elif x <= 0:
+            x = 0
+            self._direction = 1
+            self._hold = self.HOLD
+        self.scroll_x = x
+
+
+def marquee_window(text: str, width: int, offset: int) -> str:
+    """在 width 单元格内取 text 的循环窗口，起点为第 offset 个字符（跑马灯用）。"""
+    if width <= 0 or not text:
+        return " " * max(0, width)
+    s = text + "   "
+    n = len(s)
+    used = 0
+    out: list[str] = []
+    i = offset % n
+    while used < width and len(out) <= n + width:
+        ch = s[i % n]
+        w = cell_len(ch) or 1
+        if used + w > width:
+            break
+        out.append(ch)
+        used += w
+        i += 1
+    return "".join(out) + " " * (width - used)
+
+
+class MenuMarquee:
+    """首页 OptionList 菜单行控制器：描述右对齐，超宽时来回跑马灯。
+
+    屏幕 on_mount 用法::
+
+        self._marquee = MenuMarquee(self, "home-list", [(label, desc), ...])
+        ol.add_options([Option("") for _ in self._marquee.rows])
+        self.call_after_refresh(self._marquee.start)
+    """
+
+    TICK = 0.25
+    HOLD = 12
+
+    def __init__(self, screen, list_id: str, rows, *, label_width: int = 14) -> None:
+        self.screen = screen
+        self.list = screen.query_one(f"#{list_id}", OptionList)
+        self.rows = list(rows)
+        self.label_width = label_width
+        self.offset = 0
+        self.direction = 1
+        self.hold = 0
+        self._timer = None
+
+    def placeholder_options(self):
+        """与 rows 等长的占位 Option（先 add_options，再由 sync 填充文本）。"""
+        return [Option("") for _ in self.rows]
+
+    def start(self) -> None:
+        self.sync()
+        if self._timer is None:
+            self._timer = self.screen.set_interval(self.TICK, self._tick)
+
+    def set_rows(self, rows) -> None:
+        self.rows = list(rows)
+        self.offset = 0
+        self.direction = 1
+        self.hold = 0
+        self.sync()
+
+    def sync(self) -> None:
+        node = self.list
+        if not node.is_mounted or node.option_count != len(self.rows):
+            return
+        for idx in range(len(self.rows)):
+            node.replace_option_prompt_at_index(idx, self._prompt(idx))
+
+    def _room(self) -> int:
+        node = self.list
+        width = node.content_size.width
+        if node.show_vertical_scrollbar:
+            width -= node.scrollbar_size_vertical
+        return max(6, width - self.label_width - 4)
+
+    def _prompt(self, idx: int) -> Text:
+        label, desc = self.rows[idx]
+        label = shorten(label, self.label_width)
+        pad = " " * max(0, self.label_width - cell_len(label))
+        prefix = f" {idx + 1:<2} {label}{pad}"
+        room = self._room()
+        if cell_len(desc) <= room:
+            window = " " * (room - cell_len(desc)) + desc
+        else:
+            window = marquee_window(desc, room, self.offset)
+        text = Text(no_wrap=True, overflow="crop")
+        text.append(prefix, style="bold")
+        text.append(window, style="dim")
+        return text
+
+    def _tick(self) -> None:
+        room = self._room()
+        longest = max((cell_len(d) for _, d in self.rows), default=0)
+        if longest <= room:
+            if self.offset:
+                self.offset = 0
+                self.sync()
+            return
+        if self.hold > 0:
+            self.hold -= 1
+            return
+        span = max(cell_len(d) + 3 for _, d in self.rows if cell_len(d) > room)
+        self.offset += self.direction
+        if self.offset >= span:
+            self.offset = span - 1
+            self.direction = -1
+            self.hold = self.HOLD
+        elif self.offset <= 0:
+            self.offset = 0
+            self.direction = 1
+            self.hold = self.HOLD
+        self.sync()
+
+
 class ClickTable(DataTable):
     """列表即操作的表格：单击数据单元格 = 移动光标并立即发 RowSelected。
 
@@ -475,6 +654,16 @@ def shorten(text: str, limit: int) -> str:
             break
         out += ch
     return out + "…"
+
+
+def mask_secret(v: str | None, keep: int = 4) -> str:
+    """密钥/口令脱敏展示：首尾各 keep 位，过短则全圆点（placeholder 专用）。"""
+    s = (v or "").strip()
+    if not s:
+        return ""
+    if len(s) <= keep * 2 + 1:
+        return "•" * min(8, max(6, len(s)))
+    return f"{s[:keep]}…{s[-keep:]}"
 
 
 def rcell(text, content_width: int) -> Text:
