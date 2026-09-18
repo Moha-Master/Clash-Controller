@@ -1,5 +1,4 @@
 requests
 requests_unixsocket
-InquirerPy 
 paramiko
-scp
+textual>=8.0

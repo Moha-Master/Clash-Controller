@@ -1,12 +1,19 @@
-import requests
 from urllib.parse import quote
+
+import requests
+
+
+def _noop(_message: str) -> None:
+    pass
+
 
 class ClashAPI:
     # Special sentinel returned when the request was sent but the connection
     # was interrupted (server closed connection / connection reset) and the
     # client cannot determine final outcome. Caller should prompt user to verify.
     SENT_BUT_DISCONNECTED = "SENT_BUT_DISCONNECTED"
-    def __init__(self, base_url, secret=None, timeout=10, working_directory=None, debug=False):
+
+    def __init__(self, base_url, secret=None, timeout=10, working_directory=None, debug=False, log=None):
         """
         Initializes the Clash API client.
 
@@ -15,20 +22,24 @@ class ClashAPI:
         :param secret: The secret for API authentication.
         :param timeout: Request timeout in seconds.
         :param working_directory: The working directory of the Clash core, used for config paths.
+        :param debug: When True, emit raw request/response info via ``log``.
+        :param log: Callable receiving debug strings (defaults to no-op; never prints).
         """
         self.base_url = base_url
         self.timeout = timeout
         self.headers = {}
         self.working_directory = working_directory
-        # When debug is True, the client will print raw request/response info
         self.debug = bool(debug)
+        # Debug output is routed to this callback (never stdout) so it cannot
+        # corrupt the TUI.
+        self._log = log or _noop
         if secret:
             self.headers['Authorization'] = f'Bearer {secret}'
 
         if self.base_url.startswith('unix://'):
             import requests_unixsocket
             self.session = requests_unixsocket.Session()
-            encoded_path = quote(self.base_url.lstrip('unix://'), safe='')
+            encoded_path = quote(self.base_url.removeprefix('unix://'), safe='')
             self.base_url = f'http+unix://{encoded_path}'
         else:
             self.session = requests.Session()
@@ -50,7 +61,7 @@ class ClashAPI:
         - Retries once on ReadTimeout with a longer timeout.
         - Treats PUT /configs ReadTimeout conservatively as success (server-side reload may have completed).
         - For streaming requests (stream=True) returns the raw response object so callers can iterate.
-        - When debug=True, prints basic request/response information to stdout.
+        - When debug=True, emits basic request/response information via the log callback.
         """
         url = f"{self.base_url}{endpoint}"
 
@@ -68,7 +79,7 @@ class ClashAPI:
         try:
             if self.debug:
                 try:
-                    print(f"[DEBUG] Request: {method} {url}\n  headers={self.headers}\n  params={params}\n  json={json_data}\n  stream={stream}\n  timeout={self.timeout}")
+                    self._log(f"[DEBUG] Request: {method} {url}\n  headers={self.headers}\n  params={params}\n  json={json_data}\n  stream={stream}\n  timeout={self.timeout}")
                 except Exception:
                     pass
 
@@ -77,7 +88,7 @@ class ClashAPI:
             # If caller requested streaming, return the raw response so the caller can iterate
             if stream:
                 if self.debug:
-                    print(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} (streaming)")
+                    self._log(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} (streaming)")
                 return response, None
 
             # For non-stream responses: always return the API-provided body (prefer JSON),
@@ -85,7 +96,7 @@ class ClashAPI:
             # encodes operation result details in the response body.
             if response.status_code == 204 or not response.content:
                 if self.debug:
-                    print(f"[DEBUG] Response: status={response.status_code} (no content)")
+                    self._log(f"[DEBUG] Response: status={response.status_code} (no content)")
                 return {"status": "success", "status_code": response.status_code}, None
 
             # Try JSON first, fall back to text
@@ -96,7 +107,7 @@ class ClashAPI:
 
             if self.debug:
                 raw = (response.text or '')[:4096]
-                print(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
+                self._log(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
 
             # If the parsed result is a dict, inject status_code for caller convenience
             if isinstance(parsed, dict):
@@ -111,28 +122,28 @@ class ClashAPI:
             try:
                 longer_timeout = 15
                 if self.debug:
-                    print(f"[DEBUG] ReadTimeout occurred, retrying with timeout={longer_timeout}")
+                    self._log(f"[DEBUG] ReadTimeout occurred, retrying with timeout={longer_timeout}")
                 response = do_request(longer_timeout)
                 response.raise_for_status()
 
                 if stream:
                     if self.debug:
-                        print(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} (streaming)")
+                        self._log(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} (streaming)")
                     return response, None
 
                 if response.status_code == 204 or not response.content:
                     if self.debug:
-                        print(f"[DEBUG] Response after retry: status={response.status_code} (no content)")
+                        self._log(f"[DEBUG] Response after retry: status={response.status_code} (no content)")
                     return {"status": "success"}, None
 
                 if self.debug:
                     raw = response.text[:4096]
-                    print(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
+                    self._log(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
                 return response.json(), None
 
             except requests.exceptions.RequestException as exc:
                 if self.debug:
-                    print(f"[DEBUG] ReadTimeout retry failed: {exc}")
+                    self._log(f"[DEBUG] ReadTimeout retry failed: {exc}")
                 # Reload config may legitimately finish server-side while client times out.
                 if method.upper() == 'PUT' and endpoint.startswith('/configs'):
                     return None, self.SENT_BUT_DISCONNECTED
@@ -147,7 +158,7 @@ class ClashAPI:
             # Connection errors/remote close — if local, return sentinel so caller
             # can prompt user to manually verify; otherwise return the error.
             if self.debug:
-                print(f"[DEBUG] Connection error: {e}")
+                self._log(f"[DEBUG] Connection error: {e}")
             if method.upper() == 'PUT' and endpoint.startswith('/configs'):
                 return None, self.SENT_BUT_DISCONNECTED
             if self._is_local():
@@ -170,9 +181,9 @@ class ClashAPI:
 
                 if self.debug:
                     try:
-                        print(f"[DEBUG] Error Response: status={resp.status_code} headers={dict(resp.headers)} body(<=4k)={(resp.text or '')[:4096]}")
+                        self._log(f"[DEBUG] Error Response: status={resp.status_code} headers={dict(resp.headers)} body(<=4k)={(resp.text or '')[:4096]}")
                     except Exception:
-                        print(f"[DEBUG] Error Response: status={getattr(resp, 'status_code', 'unknown')}")
+                        self._log(f"[DEBUG] Error Response: status={getattr(resp, 'status_code', 'unknown')}")
 
                 # Return the response body as the result, do not treat as exception
                 if isinstance(body, dict):
@@ -182,7 +193,7 @@ class ClashAPI:
 
             # No response available: transport-level error
             if self.debug:
-                print(f"[DEBUG] RequestException without response (transport error): {e}")
+                self._log(f"[DEBUG] RequestException without response (transport error): {e}")
             return None, str(e)
 
     # === Real-time Data ===
@@ -223,7 +234,7 @@ class ClashAPI:
     def reload_configs(self, path="", payload=""):
         """Reload configuration from path."""
         return self._request('PUT', '/configs', params={'force': 'true'}, json_data={"path": path, "payload": payload} or {})
-    
+
     def set_mode(self, mode: str):
         """Sets the connection mode ('rule', 'global', 'direct')."""
         return self.update_configs({"mode": mode.lower()})
@@ -257,7 +268,7 @@ class ClashAPI:
     def get_proxy(self, name: str):
         """Get a specific proxy or group's information."""
         return self._request('GET', f'/proxies/{quote(name)}')
-        
+
     def select_proxy_in_group(self, group_name: str, proxy_name: str):
         """Select a proxy for a specific group."""
         return self._request('PUT', f'/proxies/{quote(group_name)}', json_data={"name": proxy_name})
@@ -283,7 +294,7 @@ class ClashAPI:
         """Test the delay of all proxies in a group."""
         params = {'url': url, 'timeout': str(timeout)}
         return self._request('GET', f'/group/{quote(name)}/delay', params=params)
-    
+
     # === Providers ===
     def get_proxy_providers(self):
         """Get all proxy providers."""
@@ -300,7 +311,7 @@ class ClashAPI:
     def healthcheck_proxy_provider(self, name: str):
         """Trigger a health check for a proxy provider."""
         return self._request('GET', f'/providers/proxies/{quote(name)}/healthcheck')
-    
+
     def get_rule_providers(self):
         """Get all rule providers."""
         return self._request('GET', '/providers/rules')
@@ -330,4 +341,62 @@ class ClashAPI:
     # === DNS ===
     def query_dns(self, name: str, query_type: str = 'A'):
         """Query DNS."""
-        return self._request('GET', '/dns/query', params={'name': name, 'type': query_type}) 
+        return self._request('GET', '/dns/query', params={'name': name, 'type': query_type})
+
+
+def interpret_api_result(action_desc: str, result, error) -> tuple[str, str]:
+    """把 ClashAPI 的 ``(result, error)`` 解释为 ``(message, severity)``。
+
+    severity ∈ {"ok", "warn", "err"}；纯逻辑、无副作用，供界面层展示。
+    保留 ``SENT_BUT_DISCONNECTED`` 的「已发送但断连」语义。
+    """
+
+    def _clean(raw: str) -> str:
+        if not raw:
+            return ''
+        s = raw.strip()
+        for prefix in ('update error:', 'error:', 'message:', 'update:'):
+            if s.lower().startswith(prefix):
+                s = s[len(prefix):].strip()
+                break
+        if s:
+            s = s[0].upper() + s[1:]
+        return s
+
+    if error is None:
+        if isinstance(result, dict):
+            status_val = str(result.get('status', '')).lower()
+            status_code = result.get('status_code')
+            if 'message' in result:
+                short_msg = _clean(str(result['message']))
+            elif 'info' in result:
+                short_msg = _clean(str(result['info']))
+            elif isinstance(result.get('body'), str):
+                short_msg = _clean(result['body'])
+            else:
+                short_msg = ''
+
+            success = status_val in ('success', 'ok', 'done', 'true') or (
+                isinstance(status_code, int) and status_code in (200, 201, 202, 204)
+            )
+            if success:
+                return (f"已成功{action_desc}。" + (f" 提示：{short_msg}" if short_msg else ""), "ok")
+            if short_msg:
+                return (f"{action_desc}: {short_msg}", "warn")
+            return (f"{action_desc}已完成（请查看详情）。", "ok")
+
+        text = str(result) if result is not None else ''
+        return (f"{action_desc}: {text}" if text else f"已成功{action_desc}。", "ok")
+
+    if error == ClashAPI.SENT_BUT_DISCONNECTED:
+        return (
+            f"请求“{action_desc}”已发送，但在读取最终响应前连接中断；"
+            "该操作可能已生效，请手动检查 Clash 日志 / 状态确认。",
+            "warn",
+        )
+
+    if isinstance(result, dict) and result.get('info'):
+        return (f"{action_desc}完成：{str(result.get('info'))[:2000]}", "ok")
+
+    return (f"{action_desc}失败：{error}", "err")
+

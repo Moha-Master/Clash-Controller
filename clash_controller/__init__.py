@@ -1,6 +1,5 @@
-# -*- coding: utf-8 -*-
 """
-Clash Controller - A TUI for managing Clash proxy instances.
+Clash Controller - A Textual TUI for managing Clash proxy instances.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.2.0"

@@ -1,0 +1,235 @@
+/* app.tcss — Clash Controller TUI 样式 */
+
+Screen {
+    background: $surface;
+}
+
+/* ---------- 模态三段式：标题栏 / 内容 / 按钮栏 ---------- */
+.modal-box {
+    layout: vertical;
+    height: auto;
+    max-height: 90%;
+    border: round $primary;
+    background: $surface;
+    padding: 0;
+}
+
+.modal-title {
+    height: auto;
+    padding: 0 2;
+    border-bottom: hkey $secondary;
+    content-align: left middle;
+}
+
+.modal-main {
+    height: auto;
+    padding: 1 2;
+}
+
+.btn-row {
+    height: auto;
+    padding: 0 2;
+    border-top: hkey $secondary;
+    align-horizontal: right;
+    dock: bottom;
+}
+
+.btn-row Button {
+    margin-left: 2;
+}
+
+/* ---------- 页面公共 ---------- */
+.page-hint {
+    height: auto;
+    padding: 0 1;
+    color: $text-muted;
+}
+
+.sub-toolbar {
+    height: auto;
+    margin: 1 1 0 1;
+    layout: horizontal;
+}
+
+.sub-toolbar Select {
+    margin-right: 2;
+}
+
+.sub-toolbar .tb-note {
+    width: auto;
+    color: $text-muted;
+    margin-right: 1;
+    content-align: left middle;
+}
+
+/* ---------- 内容区小容器（筛选 / 排序 / 主操作按钮） ---------- */
+.filter-row {
+    height: auto;
+    layout: horizontal;
+}
+
+.filter-row.gap-top {
+    margin-top: 1;
+}
+
+.filter-row .fl-label {
+    width: auto;
+    color: $text-muted;
+    margin-right: 1;
+    content-align: left middle;
+}
+
+.filter-row Input {
+    width: 1fr;
+}
+
+.filter-row .fill {
+    width: 1fr;
+}
+
+.filter-row Select {
+    margin-right: 2;
+}
+
+.filter-row Button {
+    margin-left: 2;
+}
+
+/* ---------- 表格 ---------- */
+.tbl {
+    height: 1fr;
+    margin: 1 1 0 1;
+    border: round $secondary;
+    overflow-x: hidden;
+}
+
+.tbl:focus {
+    border: tall $primary;
+}
+
+/* ---------- 信息面板 ---------- */
+.panel {
+    height: auto;
+    margin: 1 1 0 1;
+    padding: 1 2;
+    border: round $secondary;
+}
+
+/* ---------- 面板内键值行 ---------- */
+.kv-row {
+    height: 1;
+    layout: horizontal;
+}
+
+.kv-row.gap-top {
+    margin-top: 1;
+}
+
+.kv-label {
+    width: 10;
+    color: $text-muted;
+    content-align: left middle;
+}
+
+.kv-value {
+    width: 1fr;
+    content-align: left middle;
+    text-style: bold;
+}
+
+/* 面板内即时控件行（Switch / Select），如设置页 TUN / 模式 */
+.kv-row .kv-ctl {
+    height: 1;
+    width: auto;
+    margin: 0;
+}
+
+.kv-row Switch.kv-ctl {
+    border: none;
+    padding: 0 1;
+    height: 1;
+}
+
+.kv-row Switch.kv-ctl:focus {
+    background-tint: $foreground 8%;
+}
+
+.kv-row Select.kv-ctl {
+    min-width: 12;
+}
+
+/* ---------- 首页 / 端点选择（居中 LOGO 版式，.logo-page） ---------- */
+#home-main {
+    height: 1fr;
+    align: center middle;
+}
+
+#home-col {
+    width: 72;
+    max-width: 90%;
+    height: auto;
+}
+
+#home-banner,
+#home-plain {
+    width: 1fr;
+    text-align: center;
+    color: $primary;
+}
+
+#home-version {
+    width: 1fr;
+    text-align: right;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#home-list,
+#pf-list {
+    width: 1fr;
+    height: auto;
+    border: none;
+    background: transparent;
+}
+
+#pf-actions {
+    width: 1fr;
+    height: auto;
+    layout: horizontal;
+    align-horizontal: center;
+    margin-top: 1;
+}
+
+#pf-actions Button {
+    margin: 0 1;
+}
+
+.logo-page #home-plain {
+    display: none;
+}
+
+.logo-page.-sm #home-banner {
+    display: none;
+}
+
+.logo-page.-sm #home-plain {
+    display: block;
+}
+
+.logo-page.-sm #home-col {
+    width: 1fr;
+    padding: 0 2;
+}
+
+/* ---------- 底部状态栏 ---------- */
+#status {
+    height: 1;
+    dock: bottom;
+    padding: 0 1;
+    background: $panel;
+    color: $text;
+}
+
+#status.ok { color: $success; }
+#status.warn { color: $warning; }
+#status.err { color: $error; }

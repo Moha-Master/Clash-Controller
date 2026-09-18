@@ -1,9 +1,6 @@
-# -*- coding: utf-8 -*-
-"""
-Allow running the CLI with `python -m clash_controller`
-"""
+"""Allow running the CLI with `python -m clash_controller`."""
 
-from .cli import main
+from .main import main
 
 if __name__ == "__main__":
     main()
