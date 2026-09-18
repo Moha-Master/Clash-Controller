@@ -150,6 +150,7 @@
 - 自定义 `DataTable` 子类重写 `_on_click`：Textual 沿 MRO 逐类派发，接管与回落两条路径都要 `event.prevent_default()`，否则消息双发/双执行。
 - 屏幕方法不要命名 `_render`（覆盖 `Widget._render` 渲染崩溃）。
 - `textual.widgets` 各版本导出位置不同，`Option` 用 try/except import。
+- `Select` 内部 `#label` 是 `width: 1fr`：放进 `Horizontal` 行且不给显式宽度时，auto 宽度会把整行剩余空间全吃掉，`▼` 箭头溢出容器被裁剪——行内 Select 必须显式定宽（如设置页模式 `width: 12`）。
 
 ## 13. 验证规范（两项目同一模板）
 

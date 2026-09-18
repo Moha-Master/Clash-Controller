@@ -155,7 +155,7 @@ Screen {
 }
 
 .kv-row Select.kv-ctl {
-    min-width: 12;
+    width: 12;
 }
 
 /* ---------- 首页 / 端点选择（居中 LOGO 版式，.logo-page） ---------- */
