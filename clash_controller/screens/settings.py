@@ -1,12 +1,13 @@
 """设置屏：TUN / 模式即时生效控件（无保存动作）、重载与升级操作；日志入口在顶栏折叠菜单。"""
 import asyncio
+import time
 
 from textual import on, work
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Select, Static, Switch
 
 from ..ui import PageScreen
-from ..widgets import ConfirmModal
+from ..widgets import ConfirmModal, ControlBusy, hold_busy
 
 MODES = [("规则", "rule"), ("全局", "global"), ("直连", "direct")]
 
@@ -19,6 +20,7 @@ class SettingsScreen(PageScreen):
         super().__init__()
         self._tun = False
         self._mode = "rule"
+        self._busy = ControlBusy(self)
         self.menu = [("查看应用日志", self._open_logs, False)]
 
     def compose_page(self):
@@ -83,7 +85,7 @@ class SettingsScreen(PageScreen):
         if bool(event.value) == self._tun:
             return
         self._tun = bool(event.value)
-        self._call("toggle_tun", f"{'启用' if self._tun else '禁用'} TUN", self._tun)
+        self._call("toggle_tun", f"{'启用' if self._tun else '禁用'} TUN", self._tun, control_id="st-tun")
 
     @on(Select.Changed, "#st-mode")
     def _on_mode_changed(self, event: Select.Changed) -> None:
@@ -94,47 +96,60 @@ class SettingsScreen(PageScreen):
             return
         self._mode = mode
         labels = dict(MODES)
-        self._call("set_mode", f"切换模式为 {labels.get(mode, mode)}", mode)
+        self._call(
+            "set_mode", f"切换模式为 {labels.get(mode, mode)}", mode, control_id="st-mode"
+        )
 
     @on(Button.Pressed, "#reload-geo")
     def _on_reload_geo(self) -> None:
-        self._call("reload_geo_databases", "重载 GEO 数据库")
+        self._call("reload_geo_databases", "重载 GEO 数据库", control_id="reload-geo")
 
     @on(Button.Pressed, "#restart")
     def _on_restart(self) -> None:
-        self._confirm_then("确定要重启 Clash Core 吗？", "restart", "重启 Clash Core")
+        self._confirm_then("确定要重启 Clash Core 吗？", "restart", "重启 Clash Core", "restart")
 
     @on(Button.Pressed, "#up-kernel")
     def _on_up_kernel(self) -> None:
-        self._confirm_then("确定要请求升级内核吗？", "upgrade_kernel", "升级内核")
+        self._confirm_then("确定要请求升级内核吗？", "upgrade_kernel", "升级内核", "up-kernel")
 
     @on(Button.Pressed, "#up-ui")
     def _on_up_ui(self) -> None:
-        self._confirm_then("确定要请求升级 UI 吗？", "upgrade_ui", "升级 UI")
+        self._confirm_then("确定要请求升级 UI 吗？", "upgrade_ui", "升级 UI", "up-ui")
 
     @on(Button.Pressed, "#up-geo")
     def _on_up_geo(self) -> None:
-        self._confirm_then("确定要请求升级 GEO 数据库吗？", "upgrade_geo_databases", "升级 GEO 数据库")
+        self._confirm_then("确定要请求升级 GEO 数据库吗？", "upgrade_geo_databases", "升级 GEO 数据库", "up-geo")
 
-    def _confirm_then(self, message: str, method_name: str, desc: str) -> None:
+    def _confirm_then(self, message: str, method_name: str, desc: str, control_id: str) -> None:
         def confirm(ok: bool) -> None:
             if ok:
-                self._call(method_name, desc)
+                self._call(method_name, desc, control_id=control_id)
 
         self.app.push_screen(ConfirmModal(message, default_yes=False), confirm)
 
     @work(exclusive=True)
-    async def _call(self, method_name: str, desc: str, *args) -> None:
+    async def _call(self, method_name: str, desc: str, *args, control_id: str | None = None) -> None:
         api = self.app.get_api()
         method = getattr(api, method_name)
-        self.app.spinner(True, f"正在{desc}…")  # 即时下发：用状态栏点阵 spinner，不阻断界面
+        started = time.monotonic()
+        control = self.query_one(f"#{control_id}") if control_id else None
+        if control is not None:
+            # 就地反馈：禁用触发控件并把文本换成点阵 spinner（比顶栏更直观）
+            self._busy.start(control)
+        else:
+            self.app.spinner(True, f"正在{desc}…")
         try:
             result, error = await asyncio.to_thread(method, *args)
+            await hold_busy(started)
         except Exception as e:  # noqa: BLE001
-            self.app.spinner(False)
+            await hold_busy(started)
             self.app.notify_err(f"{desc}失败: {type(e).__name__}: {e}")
             self._load_configs()  # 失败回滚控件到服务端真实状态
             return
-        self.app.spinner(False)
+        finally:
+            if control is not None:
+                self._busy.stop()
+            else:
+                self.app.spinner(False)
         self.app.report(desc, result, error)
         self._load_configs()  # 以服务端状态为准回写控件（失败时即回滚）

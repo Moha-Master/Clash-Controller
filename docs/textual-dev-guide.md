@@ -769,15 +769,28 @@ class HintBar(ScrollableContainer):
 
 ### 12.1 `Widget.loading` 与 `ProgressCover`
 - Textual 8.2.8 每个 Widget（含 `DataTable`、`SelectionList`、`VerticalScroll`）自带 `.loading` reactive。
-- 设 `.loading = True` 时调用 `set_loading(True)`，进一步调用 `get_loading_widget()` 并通过 `_cover()` 将其绘制在被覆盖组件的区域之上。
-- 被覆盖的组件不仅视觉被替换，且从 Compositor 命中测试中被排除，**鼠标点击/按键天然无法穿透到底层组件**，解决了加载中误触旧数据行的高频 Bug。
-- 在 `App` 覆写 `get_loading_widget()` 返回 `widgets.ProgressCover`（内含 indeterminate `ProgressBar`），可将全局 `.loading = True` 统一替换为带有半透明背景与居中细条的进度指示。
+- 设 `.loading = True` 时调用 `set_loading(True)`：先 `get_loading_widget()` 取覆盖控件，再加 `-textual-loading-indicator` 类并 `_cover()`。
+- **关键实测**：`_cover()` 只是把覆盖控件交给合成器**替换原控件区域**，并不会把它挂进 DOM 参与布局（`widget._parent` 被直接赋值，但不走 `mount`）。因此：
+  - 被覆盖控件从命中测试中排除，**鼠标点击天然无法穿透到底层**，解决了加载中误触旧数据行的高频 Bug；
+  - **覆盖控件必须是单个自渲染 widget**。若用容器 + 子件（如 `Vertical` 里放 `ProgressBar`/`LoadingIndicator`），子件 `region` 恒为 `Region(0,0,0,0)`，只显示容器自身的边框/背景而内容全空。注意 `ProgressBar` 自身 `compose` 出 `Bar` 子件，所以不能直接拿它当覆盖层。
+- 本项目 `ProgressCover(Widget)` 的做法：`render()` 返回一条**固定 40 格、居中**的不定进度条 `Text`（`auto_refresh = 1/15` 逐帧移动高亮；宽度与全屏 `BusyOverlay` 的 `.busy-box` 内容宽一致，由 `content-align: center middle` 居中），组件色用 `COMPONENT_CLASSES = {"pc--bar", "pc--highlight"}`；因为覆盖的是整块（含原控件边框区域），需自带 `border` 与 `margin` 才与被覆盖控件观感一致。
+- 覆盖控件撤下后原控件区域宽可能变化，需要在 `table.loading = False` 后 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
 
 ### 12.2 全屏 BusyOverlay 模态遮罩
-- 继承 `ModalScreen[None]` 并铺满全屏（`width: 100%; height: 1fr; background: $boost; align: center middle`），内部使用 `.busy-box` 圆角居中卡片展示提示词与进度条。
-- 提供三种模式：`dots`（`LoadingIndicator`）、`bar`（不确定进度条）、`percent`（带 `total` 的确定百分比进度条）。
-- `percent` 模式内部由 `advance(amount)` 推进进度并动态计算 `X/Y (pct%)` 文案。在异步 worker 中被调用时，通过 `self.call_from_thread(ov.advance)` 安全投回 UI 线程。
+- 继承 `ModalScreen[None]`，屏本体 `align: center middle; background: $boost`；卡片 `.busy-box` 固定 `width: 46`、`height: auto`、`min-height: 5`，内部固定「标题 / 进度条 / 计数行」三行。
+- 三种模式：`dots`（`LoadingIndicator`）、`bar`（`ProgressBar(total=None)` indeterminate，逐帧 `auto_refresh=1/15`）、`percent`（`ProgressBar(total=N)` + `#busy-counter`）。
+- **布局实测**：`width: auto` + 子件 `width: 100%` 会形成循环约束，首帧只按文本宽渲染，待 `advance()` 触发重排后进度条才出现、容器随之变宽变位；宽字符 Emoji（📡）也会被挤到下一行。改为**定宽 + 标题 `text-wrap: nowrap` + `text-overflow: ellipsis; overflow: hidden` + 三行结构**后，从第一帧起尺寸/位置稳定，超长文案（如 URL）也会以 `…` 截断而顶不破边框。
+- `percent` 模式由 `advance(amount)` 推进并刷新 `#busy-counter` 的 `X/Y (pct%)`。在 worker 线程中被调用时，通过 `self.call_from_thread(ov.advance)` 投回 UI 线程。
 
 ### 12.3 状态栏点阵 Spinner
 - 在 `StatusBar` 内通过 `set_interval(_DOTS["interval"]/1000)` 驱动 Braille 点阵字符（`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` @80ms）逐帧变化。
-- 单字符点阵动画完全不改变状态栏高度（高度保持 1），适合轻量、无需全屏遮罩的后台请求。
+- 单字符点阵动画完全不改变状态栏高度（高度保持 1），适合轻量、无需全屏遮罩的后台请求。但**操作过快时只在 1 帧内起落、肉眼看不见**；需要可靠可感反馈时改用控件就地忙碌态（见 §12.4）。
+
+### 12.4 控件就地忙碌态与「快速操作看不见 / 覆盖层卡住」问题
+- 本地 API 常在 1 帧内返回：无论 `.loading` 覆盖层还是状态栏 spinner，都可能在首帧绘制前就完成，表现为「数据直接蹦出来」。对策是给忙碌态一个**最小可见时长**。
+- 覆盖层**由 worker 自己置位与撤下**，不要在 `on_mount` 里同步预置 `loading = True`：
+  - 预置后若 worker 因 `_busy`/未挂载而早退，就没人撤除它，而后续轮询都是 `show_overlay=False` 也不会撤 → **覆盖层永久卡住**；
+  - 反之若让早退分支去撤，快速操作又会立刻撤掉、仍看不见。
+- worker 的正确写法：开头 `if self._busy or not self.is_mounted: return`；进入后 `started = time.monotonic()`、置 `table.loading = True`；`finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS = 0.3`）补足最小可见时长，且用 `try/finally` 包住以确保 `table.loading = False` 在 worker 被取消时也会执行。
+- 覆盖层撤下后原控件区域宽可能变化，需要 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
+- 对策二（就地、非阻断）：`ControlBusy` 在异步下发期间 `control.disabled = True`，并把触发控件文本换成点阵 spinner（`Button` 改 `label`；`Select`/`Switch` 改同行标签 `Static`），完成后复原。比顶栏 spinner 更直观。

@@ -176,7 +176,7 @@ class ConfigScreen(PageScreen):
         debug = self.app.debug_mode or bool(profile.get("debug_ssh"))
         url = provider.get("url", "")
 
-        async with busy(self.app, f"正在从 {url} 拉取配置…", mode="bar") as ov:
+        async with busy(self.app, "正在拉取远程配置…", mode="bar") as ov:
             self.app.add_log(f"Fetching config from {url}...")
             try:
                 remote_payload, remote_hash, remote_mod_time = await asyncio.to_thread(fetch_remote_config, url)

@@ -1,6 +1,7 @@
 """概览屏：版本 + 实时流量 / 内存（流式接口）+ 当前活动连接表（每秒轮询）。"""
 import asyncio
 import json
+import time
 from collections.abc import Callable
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Static
 
 from ..ui import PageScreen
-from ..widgets import fit_table_columns, load_rows, make_table, shorten
+from ..widgets import fit_table_columns, hold_busy, load_rows, make_table, shorten
 
 COLUMN_WEIGHTS = [4, 1.5, 1.5, 3, 3]
 
@@ -134,6 +135,7 @@ class OverviewScreen(PageScreen):
         if self._busy or not self.is_mounted:
             return
         self._busy = True
+        started = time.monotonic()
         table = self.query_one("#cn-table", DataTable)
         if show_overlay:
             table.loading = True
@@ -177,9 +179,16 @@ class OverviewScreen(PageScreen):
             self.app.status(f"连接总数 {len(connections)}")
         finally:
             self._busy = False
-            if show_overlay and self.is_mounted:
-                table.loading = False
-                table.focus()
+            if show_overlay:
+                # 无论正常/异常/取消，覆盖层都必须撤下
+                try:
+                    if self.is_mounted:
+                        await hold_busy(started)
+                finally:
+                    table.loading = False
+                if self.is_mounted:
+                    self.call_after_refresh(self._refit)  # 覆盖层撤下后区域宽可能变化，按最终宽度重排
+                    table.focus()
 
     # ------------------------------------------------------------ UI 更新
 

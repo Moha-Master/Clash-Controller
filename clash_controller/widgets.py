@@ -5,19 +5,25 @@
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from rich.cells import cell_len
+from rich.spinner import SPINNERS
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
+from textual.clock import Clock
 from textual.containers import Horizontal, ScrollableContainer, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     DataTable,
@@ -717,43 +723,99 @@ def fit_table_columns(table: DataTable, weights: list[float], rows: int | None =
 
 # ---------------------------------------------------------------- 加载指示器
 
-class ProgressCover(Vertical):
-    """控件 loading=True 时覆盖其区域的 indeterminate 进度条（半透明底 + 居中细条）。
+class ProgressCover(Widget):
+    """控件 loading=True 时覆盖其区域的不定进度条（方框 + 居中往复高亮条）。
 
-    配合 App.get_loading_widget 覆写：任意控件设 .loading=True 都会用它覆盖，
-    并在覆盖期间从命中测试中排除底层子控件（天然阻断对旧数据行的误触）。
+    必须是**单个自渲染 widget**：Textual 的 ``Widget._cover()`` 只把它交给合成器
+    替换原控件区域，并不挂进 DOM 参与布局；若用容器 + 子件，子件 region 恒为 0
+    而完全不可见（``ProgressBar`` 自身 compose 出 ``Bar`` 子件，因此同样不可用）。
     """
+
+    COMPONENT_CLASSES = {"pc--bar", "pc--highlight"}
 
     DEFAULT_CSS = """
-    ProgressCover { width: 100%; height: 100%; background: $boost; align: center middle; }
-    ProgressCover > ProgressBar { width: 60%; min-width: 24; }
-    ProgressCover > .load-cap { width: 100%; content-align: center bottom; color: $text-muted; }
+    ProgressCover {
+        width: 100%;
+        height: 100%;
+        background: $surface;
+        border: round $secondary;
+        margin: 1 1 0 1;
+        content-align: center middle;
+        &> .pc--bar { color: $panel-lighten-1; background: $surface; }
+        &> .pc--highlight { color: $primary; background: $surface; }
+    }
     """
 
-    def __init__(self, caption: str | None = None) -> None:
-        super().__init__()
-        self._caption = caption
+    BAR_WIDTH = 40
+    """进度条固定宽（与全屏 BusyOverlay `.busy-box` 的内容宽一致），由 content-align 居中。"""
 
-    def compose(self):
-        yield ProgressBar(total=None, show_bar=True, show_percentage=False, show_eta=False)
-        if self._caption:
-            yield Static(self._caption, classes="load-cap")
+    def __init__(self) -> None:
+        super().__init__()
+        self._clock = Clock()
+
+    def on_mount(self) -> None:
+        self._clock.reset()
+        self.auto_refresh = 1 / 15
+
+    def render(self) -> Text:
+        width = min(max(1, self.size.width), self.BAR_WIDTH)
+        highlight = self.get_component_rich_style("pc--highlight")
+        track = self.get_component_rich_style("pc--bar")
+        highlight_style = Style.from_color(highlight.color)
+        track_style = Style.from_color(track.color)
+        bar = max(2, int(width * 0.25))
+        span = width + bar
+        if self.app.animation_level == "none":
+            start = 0
+        else:
+            speed = 30  # cells/s，与 Textual ProgressBar 的 indeterminate 一致
+            pos = int((speed * self._clock.time) % (2 * span))
+            if pos > span:
+                pos = 2 * span - pos
+            start = pos - bar
+        text = Text()
+        for i in range(width):
+            text.append("━", style=highlight_style if start <= i < start + bar else track_style)
+        return text
 
 
 class BusyOverlay(ModalScreen[None]):
     """全屏忙碌遮罩：阻断一切输入直到被 pop。
 
-    mode: "dots" 脉动圆点 / "bar" indeterminate 进度条 / "percent" 确定百分比进度条。
-    percent 模式调用 advance() 推进（并刷新 done/total 文案）。
+    使用固定宽度（46）与分行结构防止文案变化引起容器抖动或 Emoji 换行。
     """
 
     DEFAULT_CSS = """
-    BusyOverlay { align: center middle; }
-    BusyOverlay > Vertical { width: 100%; height: 1fr; align: center middle; background: $boost; }
-    BusyOverlay .busy-box { width: auto; min-width: 28; padding: 1 4; border: round $primary; background: $surface; align-horizontal: center; }
+    BusyOverlay {
+        align: center middle;
+        background: $boost;
+    }
+    BusyOverlay .busy-box {
+        width: 46;
+        height: auto;
+        min-height: 5;
+        padding: 1 2;
+        border: round $primary;
+        background: $surface;
+        align: center middle;
+    }
+    BusyOverlay #busy-title {
+        width: 100%;
+        content-align: center middle;
+        text-style: bold;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+        margin-bottom: 1;
+    }
     BusyOverlay LoadingIndicator { width: 100%; height: 1; }
-    BusyOverlay ProgressBar { width: 100%; margin-bottom: 1; }
-    BusyOverlay #busy-msg { width: 100%; content-align: center middle; }
+    BusyOverlay ProgressBar { width: 100%; }
+    BusyOverlay #busy-counter {
+        width: 100%;
+        content-align: center middle;
+        color: $text-muted;
+        margin-top: 1;
+    }
     """
 
     def __init__(self, message: str = "正在处理…", *, mode: str = "dots", total: float | None = None) -> None:
@@ -764,31 +826,34 @@ class BusyOverlay(ModalScreen[None]):
         self._done = 0.0
 
     def compose(self):
-        with Vertical():
-            with Vertical(classes="busy-box"):
-                if self._mode == "bar":
-                    yield ProgressBar(total=None, show_bar=True, show_percentage=False, show_eta=False)
-                elif self._mode == "percent":
-                    yield ProgressBar(total=self._total, show_percentage=True, show_eta=False)
-                else:
-                    yield LoadingIndicator()
-                yield Static(self._message, id="busy-msg")
+        with Vertical(classes="busy-box"):
+            yield Static(self._message, id="busy-title")
+            if self._mode == "bar":
+                yield ProgressBar(total=None, show_bar=True, show_percentage=False, show_eta=False)
+            elif self._mode == "percent":
+                yield ProgressBar(total=self._total, show_percentage=True, show_eta=False)
+                yield Static(f"0/{int(self._total or 0)} (0%)", id="busy-counter")
+            else:
+                yield LoadingIndicator()
 
     def set_message(self, message: str) -> None:
         self._message = message
         if self.is_mounted:
             with contextlib.suppress(NoMatches):
-                self.query_one("#busy-msg", Static).update(message)
+                self.query_one("#busy-title", Static).update(message)
 
     def advance(self, amount: float = 1) -> None:
-        """percent 模式：推进进度条并刷新文案。"""
+        """percent 模式：推进进度条并刷新计数文案。"""
         self._done += amount
         if self.is_mounted:
             with contextlib.suppress(NoMatches):
                 bar = self.query_one(ProgressBar)
                 bar.progress += amount
-                pct = int(round((self._done / (self._total or 1)) * 100))
-                self.query_one("#busy-msg", Static).update(f"{self._message}  {int(self._done)}/{int(self._total or 0)}（{pct}%）")
+                if self._mode == "percent":
+                    pct = int(round((self._done / (self._total or 1)) * 100))
+                    self.query_one("#busy-counter", Static).update(
+                        f"{int(self._done)}/{int(self._total or 0)} ({pct}%)"
+                    )
 
 
 @contextlib.asynccontextmanager
@@ -813,11 +878,88 @@ async def busy(app, message: str = "正在处理…", *, mode: str = "dots", tot
             overlay.remove()
 
 
+# ---------------------------------------------------------------- 控件就地忙碌态
+
+BUSY_MIN_SECONDS = 0.3
+"""忙碌态最短可见时长（秒）：本地 API 常在 1 帧内返回，过短的反馈肉眼看不见。"""
+
+
+async def hold_busy(started: float) -> None:
+    """把忙碌反馈补足到 BUSY_MIN_SECONDS，避免快速操作只闪一帧。"""
+    remaining = BUSY_MIN_SECONDS - (time.monotonic() - started)
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+
+
+class ControlBusy:
+    """异步操作期间在触发控件上就地反馈：禁用控件 + 文本换成点阵 spinner。
+
+    - `Button`：改写自身 `label`（如 `⠋ 重启 Clash`），结束后复原。
+    - `Select` / `Switch`：禁用控件，并在同行左侧标签（`.kv-label` / `.fl-label`）前插 spinner。
+    """
+
+    def __init__(self, screen) -> None:
+        self.screen = screen
+        self._control = None
+        self._targets: list[tuple[object, str]] = []
+        self._frame = 0
+        self._timer = None
+
+    @staticmethod
+    def _row_label(control):
+        parent = control.parent
+        if parent is not None:
+            for child in parent.children:
+                if isinstance(child, Static):
+                    return child
+        return None
+
+    def start(self, control) -> None:
+        self.stop()
+        self._control = control
+        control.disabled = True
+        if isinstance(control, Button):
+            self._targets.append((control, control.label.plain))
+        else:
+            label = self._row_label(control)
+            if label is not None:
+                self._targets.append((label, str(label.content)))
+        self._apply()
+        self._timer = self.screen.set_interval(SPINNERS["dots"]["interval"] / 1000, self._tick)
+
+    def _apply(self) -> None:
+        frames = SPINNERS["dots"]["frames"]
+        glyph = frames[self._frame % len(frames)]
+        for widget, original in self._targets:
+            if isinstance(widget, Button):
+                widget.label = f"{glyph} {original}"
+            else:
+                widget.update(f"{glyph} {original}")
+
+    def _tick(self) -> None:
+        self._frame += 1
+        self._apply()
+
+    def stop(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        for widget, original in self._targets:
+            if isinstance(widget, Button):
+                widget.label = original
+            else:
+                widget.update(original)
+        self._targets = []
+        if self._control is not None:
+            self._control.disabled = False
+            self._control = None
+
+
 __all__ = [
     "ConfirmModal", "InputModal", "FormField", "FormModal", "OutputModal",
     "ClickTable", "make_table", "load_rows", "filter_fuzzy", "fuzzy_score",
     "shorten", "rcell", "fit_table_columns",
-    "ProgressCover", "BusyOverlay", "busy",
+    "ProgressCover", "BusyOverlay", "busy", "ControlBusy", "hold_busy", "BUSY_MIN_SECONDS",
     "tint", "colored_text",
     "STYLE_OK", "STYLE_ERR", "STYLE_WARN", "STYLE_INFO", "STYLE_DIM",
     "HINT_PICK", "HINT_MENU", "HINT_FORM", "EDIT_HINT", "HINT_FORM_EDIT", "HINT_FORM_TA",
