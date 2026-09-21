@@ -127,12 +127,14 @@ class SettingsScreen(PageScreen):
     async def _call(self, method_name: str, desc: str, *args) -> None:
         api = self.app.get_api()
         method = getattr(api, method_name)
-        self.app.status(f"正在{desc}…")
+        self.app.spinner(True, f"正在{desc}…")  # 即时下发：用状态栏点阵 spinner，不阻断界面
         try:
             result, error = await asyncio.to_thread(method, *args)
         except Exception as e:  # noqa: BLE001
+            self.app.spinner(False)
             self.app.notify_err(f"{desc}失败: {type(e).__name__}: {e}")
             self._load_configs()  # 失败回滚控件到服务端真实状态
             return
+        self.app.spinner(False)
         self.app.report(desc, result, error)
         self._load_configs()  # 以服务端状态为准回写控件（失败时即回滚）

@@ -55,7 +55,7 @@ class OverviewScreen(PageScreen):
         self._consume("内存", api.get_memory_stream, self._on_memory)
         self.query_one(DataTable).focus()
         self._timer = self.set_interval(1.0, self._refresh_connections)
-        self._refresh_connections()
+        self._refresh_connections(show_overlay=True)
 
     def on_unmount(self) -> None:
         self._stop = True
@@ -72,7 +72,7 @@ class OverviewScreen(PageScreen):
 
     def reload_page(self) -> None:
         self._fetch_version()
-        self._refresh_connections()
+        self._refresh_connections(show_overlay=True)
 
     # ------------------------------------------------------------ 后台线程
 
@@ -130,50 +130,56 @@ class OverviewScreen(PageScreen):
         fit_table_columns(self.query_one("#cn-table", DataTable), COLUMN_WEIGHTS, rows=self._count)
 
     @work(exclusive=False)
-    async def _refresh_connections(self) -> None:
+    async def _refresh_connections(self, show_overlay: bool = False) -> None:
         if self._busy or not self.is_mounted:
             return
         self._busy = True
+        table = self.query_one("#cn-table", DataTable)
+        if show_overlay:
+            table.loading = True
         try:
-            data, error = await asyncio.to_thread(self.app.get_api().get_connections)
-        except Exception as e:  # noqa: BLE001
-            self._busy = False
-            self.app.notify_err(f"获取连接失败: {type(e).__name__}: {e}")
-            return
-        self._busy = False
-        if not self.is_mounted:
-            return
+            try:
+                data, error = await asyncio.to_thread(self.app.get_api().get_connections)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify_err(f"获取连接失败: {type(e).__name__}: {e}")
+                return
+            if not self.is_mounted:
+                return
+            if error:
+                self.app.notify_err(f"获取连接失败: {error}")
+                return
 
-        if error:
-            self.app.notify_err(f"获取连接失败: {error}")
-            return
+            data = data if isinstance(data, dict) else {}
+            connections = data.get("connections", []) or []
+            total_dl = data.get("downloadTotal", 0) / (1024 * 1024)
+            total_ul = data.get("uploadTotal", 0) / (1024 * 1024)
 
-        data = data if isinstance(data, dict) else {}
-        connections = data.get("connections", []) or []
-        total_dl = data.get("downloadTotal", 0) / (1024 * 1024)
-        total_ul = data.get("uploadTotal", 0) / (1024 * 1024)
-
-        rows = []
-        for conn in connections:
-            metadata = conn.get("metadata", {}) or {}
-            host = metadata.get("host") or metadata.get("destinationIP", "未知")
-            rows.append([
-                Text(shorten(str(host), 40)),
-                Text(str(metadata.get("network", "?"))),
-                Text(str(metadata.get("type", "?"))),
-                Text(shorten(str(conn.get("rule", "?")), 30)),
-                Text(shorten(" -> ".join(conn.get("chains", []) or []), 30)),
-            ])
-        self._count = len(rows)
-        load_rows(self.query_one("#cn-table", DataTable), rows)
-        self._refit()
-        self.query_one("#cn-summary", Static).update(
-            Text(
-                f"{len(connections)} 条 · 上传 {total_ul:.2f} MB / 下载 {total_dl:.2f} MB"
-                f" · 更新于 {datetime.now():%H:%M:%S}"
+            rows = []
+            for conn in connections:
+                metadata = conn.get("metadata", {}) or {}
+                host = metadata.get("host") or metadata.get("destinationIP", "未知")
+                rows.append([
+                    Text(shorten(str(host), 40)),
+                    Text(str(metadata.get("network", "?"))),
+                    Text(str(metadata.get("type", "?"))),
+                    Text(shorten(str(conn.get("rule", "?")), 30)),
+                    Text(shorten(" -> ".join(conn.get("chains", []) or []), 30)),
+                ])
+            self._count = len(rows)
+            load_rows(table, rows)
+            self._refit()
+            self.query_one("#cn-summary", Static).update(
+                Text(
+                    f"{len(connections)} 条 · 上传 {total_ul:.2f} MB / 下载 {total_dl:.2f} MB"
+                    f" · 更新于 {datetime.now():%H:%M:%S}"
+                )
             )
-        )
-        self.app.status(f"连接总数 {len(connections)}")
+            self.app.status(f"连接总数 {len(connections)}")
+        finally:
+            self._busy = False
+            if show_overlay and self.is_mounted:
+                table.loading = False
+                table.focus()
 
     # ------------------------------------------------------------ UI 更新
 

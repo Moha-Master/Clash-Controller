@@ -3,6 +3,9 @@
 所有模态均为 ModalScreen 泛型返回值，配合 push_screen_wait / 回调消费；
 数据展示统一使用 DataTable（ClickTable 单击执行），不构造字符串伪表格。
 """
+from __future__ import annotations
+
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -13,8 +16,21 @@ from textual import events
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical, VerticalScroll
 from textual.coordinate import Coordinate
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Input, Label, OptionList, Select, Static, Switch, TextArea
+from textual.widgets import (
+    Button,
+    DataTable,
+    Input,
+    Label,
+    LoadingIndicator,
+    OptionList,
+    ProgressBar,
+    Select,
+    Static,
+    Switch,
+    TextArea,
+)
 
 try:  # textual 各版本 Option 导出位置不同
     from textual.widgets.option_list import Option
@@ -340,7 +356,7 @@ class FormModal(ModalScreen["dict | None"]):
             text = HINT_FORM
         self.query_one("#frm-hint", HintBar).update(text)
 
-    def _collect(self) -> "dict | None":
+    def _collect(self) -> dict | None:
         """收集表单值；校验失败时写入错误信息并返回 None。可在子类扩展。"""
         err_box = self.query_one("#frm-error", Static)
         err_box.update(Text(""))
@@ -699,10 +715,109 @@ def fit_table_columns(table: DataTable, weights: list[float], rows: int | None =
     return visible
 
 
+# ---------------------------------------------------------------- 加载指示器
+
+class ProgressCover(Vertical):
+    """控件 loading=True 时覆盖其区域的 indeterminate 进度条（半透明底 + 居中细条）。
+
+    配合 App.get_loading_widget 覆写：任意控件设 .loading=True 都会用它覆盖，
+    并在覆盖期间从命中测试中排除底层子控件（天然阻断对旧数据行的误触）。
+    """
+
+    DEFAULT_CSS = """
+    ProgressCover { width: 100%; height: 100%; background: $boost; align: center middle; }
+    ProgressCover > ProgressBar { width: 60%; min-width: 24; }
+    ProgressCover > .load-cap { width: 100%; content-align: center bottom; color: $text-muted; }
+    """
+
+    def __init__(self, caption: str | None = None) -> None:
+        super().__init__()
+        self._caption = caption
+
+    def compose(self):
+        yield ProgressBar(total=None, show_bar=True, show_percentage=False, show_eta=False)
+        if self._caption:
+            yield Static(self._caption, classes="load-cap")
+
+
+class BusyOverlay(ModalScreen[None]):
+    """全屏忙碌遮罩：阻断一切输入直到被 pop。
+
+    mode: "dots" 脉动圆点 / "bar" indeterminate 进度条 / "percent" 确定百分比进度条。
+    percent 模式调用 advance() 推进（并刷新 done/total 文案）。
+    """
+
+    DEFAULT_CSS = """
+    BusyOverlay { align: center middle; }
+    BusyOverlay > Vertical { width: 100%; height: 1fr; align: center middle; background: $boost; }
+    BusyOverlay .busy-box { width: auto; min-width: 28; padding: 1 4; border: round $primary; background: $surface; align-horizontal: center; }
+    BusyOverlay LoadingIndicator { width: 100%; height: 1; }
+    BusyOverlay ProgressBar { width: 100%; margin-bottom: 1; }
+    BusyOverlay #busy-msg { width: 100%; content-align: center middle; }
+    """
+
+    def __init__(self, message: str = "正在处理…", *, mode: str = "dots", total: float | None = None) -> None:
+        super().__init__()
+        self._message = message
+        self._mode = mode
+        self._total = total
+        self._done = 0.0
+
+    def compose(self):
+        with Vertical():
+            with Vertical(classes="busy-box"):
+                if self._mode == "bar":
+                    yield ProgressBar(total=None, show_bar=True, show_percentage=False, show_eta=False)
+                elif self._mode == "percent":
+                    yield ProgressBar(total=self._total, show_percentage=True, show_eta=False)
+                else:
+                    yield LoadingIndicator()
+                yield Static(self._message, id="busy-msg")
+
+    def set_message(self, message: str) -> None:
+        self._message = message
+        if self.is_mounted:
+            with contextlib.suppress(NoMatches):
+                self.query_one("#busy-msg", Static).update(message)
+
+    def advance(self, amount: float = 1) -> None:
+        """percent 模式：推进进度条并刷新文案。"""
+        self._done += amount
+        if self.is_mounted:
+            with contextlib.suppress(NoMatches):
+                bar = self.query_one(ProgressBar)
+                bar.progress += amount
+                pct = int(round((self._done / (self._total or 1)) * 100))
+                self.query_one("#busy-msg", Static).update(f"{self._message}  {int(self._done)}/{int(self._total or 0)}（{pct}%）")
+
+
+@contextlib.asynccontextmanager
+async def busy(app, message: str = "正在处理…", *, mode: str = "dots", total: float | None = None):
+    """异步 worker 内包裹耗时操作，全程显示全屏忙碌遮罩（异常/取消亦收起）。
+
+    用法：async with busy(self.app, "正在保存…", mode="bar"): await asyncio.to_thread(...)
+    需要进度回调时接住返回的遮罩对象：async with busy(app, "拉取中", mode="percent", total=n) as ov: ...
+    """
+    overlay = BusyOverlay(message, mode=mode, total=total)
+    app.push_screen(overlay)
+    try:
+        yield overlay
+    finally:
+        # 确保遮罩被收起：可能仍是栈顶，也可能已被其它层覆盖
+        for _ in range(len(app.screen_stack)):
+            if isinstance(app.screen, BusyOverlay) or app.screen is overlay:
+                app.pop_screen()
+            else:
+                break
+        if overlay.is_mounted:
+            overlay.remove()
+
+
 __all__ = [
     "ConfirmModal", "InputModal", "FormField", "FormModal", "OutputModal",
     "ClickTable", "make_table", "load_rows", "filter_fuzzy", "fuzzy_score",
     "shorten", "rcell", "fit_table_columns",
+    "ProgressCover", "BusyOverlay", "busy",
     "tint", "colored_text",
     "STYLE_OK", "STYLE_ERR", "STYLE_WARN", "STYLE_INFO", "STYLE_DIM",
     "HINT_PICK", "HINT_MENU", "HINT_FORM", "EDIT_HINT", "HINT_FORM_EDIT", "HINT_FORM_TA",

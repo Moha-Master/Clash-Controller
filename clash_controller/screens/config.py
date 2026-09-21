@@ -11,7 +11,7 @@ from ..config import load_config_providers, save_config_providers
 from ..deploy import compute_sha256, evaluate_update, fetch_remote_config, read_current_config
 from ..ssh import apply_local_config_file, apply_remote_config_via_ssh
 from ..ui import PageScreen
-from ..widgets import ConfirmModal, FormField, FormModal, fit_table_columns, load_rows, make_table, shorten
+from ..widgets import ConfirmModal, FormField, FormModal, busy, fit_table_columns, load_rows, make_table, shorten
 
 COLUMN_WEIGHTS = [2, 7]
 
@@ -176,61 +176,62 @@ class ConfigScreen(PageScreen):
         debug = self.app.debug_mode or bool(profile.get("debug_ssh"))
         url = provider.get("url", "")
 
-        self.app.status(f"正在从 {url} 拉取配置…")
-        self.app.add_log(f"Fetching config from {url}...")
-        try:
-            remote_payload, remote_hash, remote_mod_time = await asyncio.to_thread(fetch_remote_config, url)
-            local_mtime, local_bytes = await asyncio.to_thread(
-                read_current_config, profile, self.app.add_log, debug
-            )
-        except Exception as e:  # noqa: BLE001
-            self.app.notify_err(f"拉取或读取配置失败: {type(e).__name__}: {e}")
-            return
-
-        local_hash = compute_sha256(local_bytes)
-        decision = evaluate_update(remote_hash, remote_mod_time, local_hash, local_mtime)
-
-        proceed = True
-        if decision == "auto":
-            self.app.add_log("Remote config newer with different hash. Proceeding without prompt.")
-        elif decision == "confirm_older":
-            proceed = await self.app.push_screen_wait(
-                ConfirmModal("远程配置可能比本地更旧，仍要覆盖目标配置吗？", default_yes=False)
-            )
-        elif decision == "confirm_unknown":
-            proceed = await self.app.push_screen_wait(
-                ConfirmModal("远程配置内容不同，但无法获取更新时间。是否继续覆盖目标配置？", default_yes=True)
-            )
-        else:  # confirm_same
-            proceed = await self.app.push_screen_wait(
-                ConfirmModal("远程配置与目标配置内容相同，仍要覆盖吗？", default_yes=False)
-            )
-
-        if not proceed:
-            self.app.status("已取消更新", "warn")
-            self.app.add_log("Config update cancelled by user after comparison.")
-            return
-
-        self.app.status("正在部署配置…")
-        try:
-            if profile.get("endpoint_type") == "remote":
-                self.app.add_log("Deploying config to remote endpoint via SSH.")
-                await asyncio.to_thread(
-                    apply_remote_config_via_ssh, profile, remote_payload, self.app.add_log, debug
+        async with busy(self.app, f"正在从 {url} 拉取配置…", mode="bar") as ov:
+            self.app.add_log(f"Fetching config from {url}...")
+            try:
+                remote_payload, remote_hash, remote_mod_time = await asyncio.to_thread(fetch_remote_config, url)
+                ov.set_message("正在读取目标配置…")
+                local_mtime, local_bytes = await asyncio.to_thread(
+                    read_current_config, profile, self.app.add_log, debug
                 )
-            else:
-                self.app.add_log("Deploying config to local endpoint file.")
-                await asyncio.to_thread(apply_local_config_file, profile, remote_payload)
-        except Exception as e:  # noqa: BLE001
-            self.app.notify_err(f"部署配置失败: {type(e).__name__}: {e}")
-            return
+            except Exception as e:  # noqa: BLE001
+                self.app.notify_err(f"拉取或读取配置失败: {type(e).__name__}: {e}")
+                return
 
-        self.app.status("正在通过 Clash API 重载配置…")
-        try:
-            result, error = await asyncio.to_thread(self.app.get_api().reload_configs)
-        except Exception as e:  # noqa: BLE001
-            self.app.notify_err(f"重载配置失败: {type(e).__name__}: {e}")
-            return
+            local_hash = compute_sha256(local_bytes)
+            decision = evaluate_update(remote_hash, remote_mod_time, local_hash, local_mtime)
+
+            proceed = True
+            if decision == "auto":
+                self.app.add_log("Remote config newer with different hash. Proceeding without prompt.")
+            elif decision == "confirm_older":
+                proceed = await self.app.push_screen_wait(
+                    ConfirmModal("远程配置可能比本地更旧，仍要覆盖目标配置吗？", default_yes=False)
+                )
+            elif decision == "confirm_unknown":
+                proceed = await self.app.push_screen_wait(
+                    ConfirmModal("远程配置内容不同，但无法获取更新时间。是否继续覆盖目标配置？", default_yes=True)
+                )
+            else:  # confirm_same
+                proceed = await self.app.push_screen_wait(
+                    ConfirmModal("远程配置与目标配置内容相同，仍要覆盖吗？", default_yes=False)
+                )
+
+            if not proceed:
+                self.app.status("已取消更新", "warn")
+                self.app.add_log("Config update cancelled by user after comparison.")
+                return
+
+            ov.set_message("正在部署配置…")
+            try:
+                if profile.get("endpoint_type") == "remote":
+                    self.app.add_log("Deploying config to remote endpoint via SSH.")
+                    await asyncio.to_thread(
+                        apply_remote_config_via_ssh, profile, remote_payload, self.app.add_log, debug
+                    )
+                else:
+                    self.app.add_log("Deploying config to local endpoint file.")
+                    await asyncio.to_thread(apply_local_config_file, profile, remote_payload)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify_err(f"部署配置失败: {type(e).__name__}: {e}")
+                return
+
+            ov.set_message("正在通过 Clash API 重载配置…")
+            try:
+                result, error = await asyncio.to_thread(self.app.get_api().reload_configs)
+            except Exception as e:  # noqa: BLE001
+                self.app.notify_err(f"重载配置失败: {type(e).__name__}: {e}")
+                return
         self.app.report("重载配置", result, error)
 
     @on(Button.Pressed, "#reload-api")

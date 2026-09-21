@@ -762,3 +762,22 @@ class HintBar(ScrollableContainer):
 ### 11.5 容器内的 OptionList 必须去掉默认边框
 
 `OptionList.DEFAULT_CSS` 自带 `border: tall $border-blurred`（直角框）。放进 `.panel` 圆角容器时必须显式 `border: none; background: transparent`，否则圆角容器内套一个直角方框（历史案例：litellm `#mh-list`）。
+
+---
+
+## 12. 加载指示器与遮罩实测记录
+
+### 12.1 `Widget.loading` 与 `ProgressCover`
+- Textual 8.2.8 每个 Widget（含 `DataTable`、`SelectionList`、`VerticalScroll`）自带 `.loading` reactive。
+- 设 `.loading = True` 时调用 `set_loading(True)`，进一步调用 `get_loading_widget()` 并通过 `_cover()` 将其绘制在被覆盖组件的区域之上。
+- 被覆盖的组件不仅视觉被替换，且从 Compositor 命中测试中被排除，**鼠标点击/按键天然无法穿透到底层组件**，解决了加载中误触旧数据行的高频 Bug。
+- 在 `App` 覆写 `get_loading_widget()` 返回 `widgets.ProgressCover`（内含 indeterminate `ProgressBar`），可将全局 `.loading = True` 统一替换为带有半透明背景与居中细条的进度指示。
+
+### 12.2 全屏 BusyOverlay 模态遮罩
+- 继承 `ModalScreen[None]` 并铺满全屏（`width: 100%; height: 1fr; background: $boost; align: center middle`），内部使用 `.busy-box` 圆角居中卡片展示提示词与进度条。
+- 提供三种模式：`dots`（`LoadingIndicator`）、`bar`（不确定进度条）、`percent`（带 `total` 的确定百分比进度条）。
+- `percent` 模式内部由 `advance(amount)` 推进进度并动态计算 `X/Y (pct%)` 文案。在异步 worker 中被调用时，通过 `self.call_from_thread(ov.advance)` 安全投回 UI 线程。
+
+### 12.3 状态栏点阵 Spinner
+- 在 `StatusBar` 内通过 `set_interval(_DOTS["interval"]/1000)` 驱动 Braille 点阵字符（`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` @80ms）逐帧变化。
+- 单字符点阵动画完全不改变状态栏高度（高度保持 1），适合轻量、无需全屏遮罩的后台请求。
