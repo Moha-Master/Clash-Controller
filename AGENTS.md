@@ -281,6 +281,7 @@ clash_controller/
 - `InquirerPy` 已移除、未使用的 `scp` 已从依赖移除，均勿引入。
 - 部署链路（fetch/apply）在测试中 monkeypatch `screens.config` 模块内的函数名，避免真实网络与 sudo。
 - 本地 API 极快，加载反馈容易「看不见」：概览覆盖层**由 worker 自己置位/撤下**（不要在 `on_mount` 里同步预置，否则 worker 早退时覆盖层无人撤下会永久卡住），并在 worker `finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS=0.3`）保证可感；撤下覆盖后必须 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
+- 覆盖层 `ProgressCover.render()` 返回 `_IndeterminateBar`（实现 `__rich_console__`，按 `options.max_width` 绘制时取宽）：**不能读 `self.size`**，覆盖层不参与常规布局，首帧 `_size` 可能为 0 而画出隐形条（历史事故：概览只剩空白方框、看不到进度条）。
 - 设置页异步下发不再用顶栏 spinner，改用 `widgets.ControlBusy`：禁用触发控件 + 把控件文本换成点阵 spinner（Button 改 `label`，Select/Switch 改同行标签 `Static`），完成复原；调用 `_call(..., control_id=...)` 传入触发控件 id。超长标题由 `#busy-title` 的 `text-overflow: ellipsis` 统一截断。
 
 ## 依赖与质量

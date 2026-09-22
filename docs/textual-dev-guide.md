@@ -791,6 +791,7 @@ class HintBar(ScrollableContainer):
 - 覆盖层**由 worker 自己置位与撤下**，不要在 `on_mount` 里同步预置 `loading = True`：
   - 预置后若 worker 因 `_busy`/未挂载而早退，就没人撤除它，而后续轮询都是 `show_overlay=False` 也不会撤 → **覆盖层永久卡住**；
   - 反之若让早退分支去撤，快速操作又会立刻撤掉、仍看不见。
-- worker 的正确写法：开头 `if self._busy or not self.is_mounted: return`；进入后 `started = time.monotonic()`、置 `table.loading = True`；`finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS = 0.3`）补足最小可见时长，且用 `try/finally` 包住以确保 `table.loading = False` 在 worker 被取消时也会执行。
+- **覆盖层 `render()` 绝不能读 `self.size`**：覆盖层不参与常规布局，首帧 `_size` 可能仍是 0，`min(self.size.width, 40)` 会退化成「一格宽的隐形条」，表现为只有空白方框、看不到进度条（`on_mount` 正常、`auto_refresh` 正常也一样）。要么用 Rich 渲染协议在**绘制时**取宽（实现 `__rich_console__(console, options)`，用 `options.max_width`），要么返回不依赖尺寸的自渲染 renderable——早先的 spinner 之所以正常，正是因为它不依赖 `self.size`。
+- worker 的正确写法：开头仅做去重 `if self._busy: return`，**严禁在入口检查 `not self.is_mounted`**（因为 `on_mount` 触发 worker 时 Screen 的 `is_mounted` 在 Textual 调度下尚未置 True，会导致首载被误杀）；进入后 `started = time.monotonic()`、置 `table.loading = True`；网络返回后（await 之后）检查 `if not self.is_mounted: return`（防组件已卸载）；`finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS = 0.3`）补足最小可见时长，且用 `try/finally` 包住以确保 `table.loading = False` 在 worker 被取消时也会执行。
 - 覆盖层撤下后原控件区域宽可能变化，需要 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
 - 对策二（就地、非阻断）：`ControlBusy` 在异步下发期间 `control.disabled = True`，并把触发控件文本换成点阵 spinner（`Button` 改 `label`；`Select`/`Switch` 改同行标签 `Static`），完成后复原。比顶栏 spinner 更直观。

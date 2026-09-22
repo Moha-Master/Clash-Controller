@@ -723,6 +723,43 @@ def fit_table_columns(table: DataTable, weights: list[float], rows: int | None =
 
 # ---------------------------------------------------------------- 加载指示器
 
+class _IndeterminateBar:
+    """自渲染不定进度条：按**绘制时**的区域宽度取景并居中。
+
+    不依赖 ``Widget.size``：覆盖层是交给合成器临时绘制的，首帧 ``_size`` 可能
+    尚未由 ``_size_updated`` 写入，若在 ``render()`` 里读 ``self.size`` 会拿到 0
+    而画出一格宽的「隐形条」。改用 Rich 渲染协议，``options.max_width`` 即为本次
+    真正要绘制的区域宽度，保证任何一帧都居中可见。
+    """
+
+    def __init__(
+        self, clock: Clock, animation_level: str, highlight: Style, track: Style, cap: int
+    ) -> None:
+        self._clock = clock
+        self._animation_level = animation_level
+        self._highlight = highlight
+        self._track = track
+        self._cap = cap
+
+    def __rich_console__(self, console, options):  # noqa: ANN001, ANN201
+        total = max(1, options.max_width)
+        width = min(total, self._cap)
+        bar = max(2, int(width * 0.25))
+        span = width + bar
+        if self._animation_level == "none":
+            start = 0
+        else:
+            speed = 30  # cells/s，与 Textual ProgressBar 的 indeterminate 一致
+            pos = int((speed * self._clock.time) % (2 * span))
+            if pos > span:
+                pos = 2 * span - pos
+            start = pos - bar
+        text = Text()
+        for i in range(width):
+            text.append("━", style=self._highlight if start <= i < start + bar else self._track)
+        yield text
+
+
 class ProgressCover(Widget):
     """控件 loading=True 时覆盖其区域的不定进度条（方框 + 居中往复高亮条）。
 
@@ -757,26 +794,12 @@ class ProgressCover(Widget):
         self._clock.reset()
         self.auto_refresh = 1 / 15
 
-    def render(self) -> Text:
-        width = min(max(1, self.size.width), self.BAR_WIDTH)
-        highlight = self.get_component_rich_style("pc--highlight")
-        track = self.get_component_rich_style("pc--bar")
-        highlight_style = Style.from_color(highlight.color)
-        track_style = Style.from_color(track.color)
-        bar = max(2, int(width * 0.25))
-        span = width + bar
-        if self.app.animation_level == "none":
-            start = 0
-        else:
-            speed = 30  # cells/s，与 Textual ProgressBar 的 indeterminate 一致
-            pos = int((speed * self._clock.time) % (2 * span))
-            if pos > span:
-                pos = 2 * span - pos
-            start = pos - bar
-        text = Text()
-        for i in range(width):
-            text.append("━", style=highlight_style if start <= i < start + bar else track_style)
-        return text
+    def render(self) -> _IndeterminateBar:
+        highlight = Style.from_color(self.get_component_rich_style("pc--highlight").color)
+        track = Style.from_color(self.get_component_rich_style("pc--bar").color)
+        return _IndeterminateBar(
+            self._clock, self.app.animation_level, highlight, track, self.BAR_WIDTH
+        )
 
 
 class BusyOverlay(ModalScreen[None]):

@@ -132,7 +132,7 @@ class OverviewScreen(PageScreen):
 
     @work(exclusive=False)
     async def _refresh_connections(self, show_overlay: bool = False) -> None:
-        if self._busy or not self.is_mounted:
+        if self._busy:
             return
         self._busy = True
         started = time.monotonic()
