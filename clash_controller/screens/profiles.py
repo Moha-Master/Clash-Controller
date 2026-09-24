@@ -1,5 +1,6 @@
 """端点档案屏（根屏）：居中 LOGO 版式，选择 / 连接 / 新增 / 编辑 / 删除（含 SSH 子表单）。"""
 import asyncio
+import time
 
 from rich.text import Text
 from textual import on, work
@@ -12,7 +13,7 @@ from .. import __version__
 from ..config import load_profiles, save_profiles
 from ..deploy import default_endpoint_type
 from ..ui import LOGO_WIDTH, home_col_width, logo_text
-from ..widgets import ConfirmModal, FormField, FormModal, HintBar, MenuMarquee
+from ..widgets import ConfirmModal, FormField, FormModal, HintBar, MenuMarquee, busy, hold_busy
 
 try:  # textual 各版本 Option 导出位置不同
     from textual.widgets.option_list import Option
@@ -311,10 +312,19 @@ class ProfileListScreen(Screen):
         self.app.set_profile(profile)
         self.app.add_log(f"Selected profile '{profile.get('name')}'.")
         self.app.status(f"正在连接 {profile.get('url')} …")
-        try:
-            version_info, error = await asyncio.to_thread(self.app.get_api().get_version)
-        except Exception as e:  # noqa: BLE001
-            self.app.notify_err(f"连接失败: {type(e).__name__}: {e}")
+        started = time.monotonic()
+        version_info = None
+        api_error = None
+        conn_exc: Exception | None = None
+        async with busy(self.app, f"正在连接 {profile.get('url')} …", mode="bar"):
+            try:
+                version_info, api_error = await asyncio.to_thread(self.app.get_api().get_version)
+            except Exception as e:  # noqa: BLE001
+                conn_exc = e
+            # 本地 API 常在 1 帧内返回，补足最短可见时长，避免进度条「看不见」
+            await hold_busy(started)
+        if conn_exc is not None:
+            self.app.notify_err(f"连接失败: {type(conn_exc).__name__}: {conn_exc}")
             self.app.clear_profile()
             return
         if version_info:
@@ -324,7 +334,7 @@ class ProfileListScreen(Screen):
 
             self.app.push_screen(HomeScreen())
         else:
-            self.app.notify_err(f"连接失败，请检查端点配置并确认 Clash 正在运行。错误：{error}")
+            self.app.notify_err(f"连接失败，请检查端点配置并确认 Clash 正在运行。错误：{api_error}")
             self.app.clear_profile()
 
     # ------------------------------------------------------------ 增删改
