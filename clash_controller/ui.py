@@ -179,10 +179,9 @@ class PageScreen(Screen):
     def set_subtitle(self, text: str) -> None:
         """更新顶栏副标题。
 
-        不能用 ``is_mounted`` 判断：Textual 是**派发完 Mount 事件之后**才置位的，
-        所以 `on_mount` 里调用本方法时它仍是 False，会让首屏副标题永远停在空串
-        （设置页端点名 / 配置页提供方数量 / 概览页端点名都靠这里）。
-        改为按顶栏控件是否已组合出来判断：未组合时仅保存文本，交由 compose 使用。
+        判定不能用 ``is_mounted``：`on_mount` 里它仍是 `False`（Textual 派发完
+        Mount 事件之后才置位），首屏副标题会永远停在空串。改为按顶栏控件是否
+        已组合判断：未组合时仅保存文本，交由 compose 使用。
         """
         self.subtitle = text
         try:

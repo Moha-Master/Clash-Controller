@@ -175,6 +175,7 @@
 - `cell_len` 在 `rich.cells`（复数模块名）。
 - 自定义 `DataTable` 子类重写 `_on_click`：Textual 沿 MRO 逐类派发，接管与回落两条路径都要 `event.prevent_default()`，否则消息双发/双执行。
 - 屏幕方法不要命名 `_render`（覆盖 `Widget._render` 渲染崩溃）。
+- `on_mount` 回调里 `is_mounted` **仍是 `False`**（Textual 是派发完 Mount 事件**之后**才置位）：靠它守卫的写入会静默跳过（历史事故：`PageScreen.set_subtitle()` 写 `if self.is_mounted:` → 首屏顶栏副标题永远空白）。这类判定改用**控件是否已组合**（`try: query_one(...) except NoMatches: ...`）或 `call_after_refresh`，不要依赖 `is_mounted`。
 - **级联优先级**：app.tcss（含 Screen CSS）对同一属性**始终压过** widget 自身 `DEFAULT_CSS`，与选择器特异度无关——给通用控件写全局规则前，先 grep 各控件 DEFAULT_CSS 里对该控件的 width/padding 定制（历史事故：全局 `Button{padding:0 1}` 掀翻 MonthPicker 3 格小按钮，rich `chop_cells` 除零崩溃）。
 - `#topbar Button { margin }` 这类**后代选择器**会命中挂在顶栏里的组件内部按钮（MonthPicker 弹层等），且 id 前缀特异度压过 widget 类规则；顶栏间距规则必须限定到具体 id（`#topbar #top-back`）。
 - `OptionList` 的 `DEFAULT_CSS` 自带 `border: tall $border-blurred`（直角框）。放进 `.panel` 圆角容器时必须显式 `border: none; background: transparent`（如 `#mh-list`），否则容器内套一个直角方框。
@@ -282,7 +283,9 @@ clash_controller/
 - 部署链路（fetch/apply）在测试中 monkeypatch `screens.config` 模块内的函数名，避免真实网络与 sudo。
 - 本地 API 极快，加载反馈容易「看不见」：概览覆盖层**由 worker 自己置位/撤下**（不要在 `on_mount` 里同步预置，否则 worker 早退时覆盖层无人撤下会永久卡住），并在 worker `finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS=0.3`）保证可感；撤下覆盖后必须 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
 - 覆盖层 `ProgressCover.render()` 返回 `_IndeterminateBar`（实现 `__rich_console__`，按 `options.max_width` 绘制时取宽）：**不能读 `self.size`**，覆盖层不参与常规布局，首帧 `_size` 可能为 0 而画出隐形条（历史事故：概览只剩空白方框、看不到进度条）。
-- 设置页异步下发不再用顶栏 spinner，改用 `widgets.ControlBusy`：禁用触发控件 + 把控件文本换成点阵 spinner（Button 改 `label`，Select/Switch 改同行标签 `Static`），完成复原；调用 `_call(..., control_id=...)` 传入触发控件 id。超长标题由 `#busy-title` 的 `text-overflow: ellipsis` 统一截断。
+- 概览页离开时 worker 会被取消，父链会先于 `is_mounted` 复位被摘掉，`finally` 里写 `table.loading` / `table.focus()` 会抛 `NoScreen`（历史事故：在覆盖层 `hold_busy` 期间按 Esc 离开概览，整个应用报错退出）。统一用 `overview._attached(widget)`（判定 `widget.screen` 可达）再撤覆盖层 / 移焦点，`is_mounted` 救不了这个场景（见第一部分 §12）。
+- 设置页异步下发不再用顶栏 spinner，改用 `widgets.ControlBusy`：禁用触发控件 + 把控件文本换成点阵 spinner（Button 改 `label`，Select/Switch 改同行标签 `Static`），完成复原；调用 `_call(..., control_id=...)` 传入触发控件 id。超长标题由 `#busy-title` 的 `text-overflow: ellipsis` 统一截断。配置页「重载配置」走同一套（`ControlBusy` + `hold_busy`，异常 / 取消路径也复原）；设置页「核心操作」行另有 `#reload-conf` 按钮，同样经 `_call(..., control_id="reload-conf")`。
+- 端点连接预检查统一走 `api.interpret_connect_result()`（只读探测）：本地 `SENT_BUT_DISCONNECTED` 按失败处理并翻译成人话，401/403、非 2xx、缺 `version` 字段一律判连不上（`_request` 会把 401 响应体当**正常结果**返回，旧逻辑 `if version_info:` 会把密钥错误误判成连接成功而推入首页）；失败时留在选择屏 + `clear_profile` + 写日志。写操作仍走 `interpret_api_result` 保留「已发送但断连」哨兵语义，勿改。
 
 ## 依赖与质量
 
