@@ -1,5 +1,6 @@
 """配置管理屏：配置提供方的增删改，以及拉取 / 比对 / 部署 / 重载流程。"""
 import asyncio
+import time
 
 from rich.text import Text
 from textual import on, work
@@ -11,7 +12,18 @@ from ..config import load_config_providers, save_config_providers
 from ..deploy import compute_sha256, evaluate_update, fetch_remote_config, read_current_config
 from ..ssh import apply_local_config_file, apply_remote_config_via_ssh
 from ..ui import PageScreen
-from ..widgets import ConfirmModal, FormField, FormModal, busy, fit_table_columns, load_rows, make_table, shorten
+from ..widgets import (
+    ConfirmModal,
+    ControlBusy,
+    FormField,
+    FormModal,
+    busy,
+    fit_table_columns,
+    hold_busy,
+    load_rows,
+    make_table,
+    shorten,
+)
 
 COLUMN_WEIGHTS = [2, 7]
 
@@ -30,6 +42,7 @@ class ConfigScreen(PageScreen):
         super().__init__()
         self._providers: list = []
         self._display: list = []
+        self._busy = ControlBusy(self)
 
     def compose_page(self):
         with Vertical(classes="panel"):
@@ -240,10 +253,18 @@ class ConfigScreen(PageScreen):
 
     @work(exclusive=True)
     async def _reload_api(self) -> None:
-        self.app.status("正在重载配置…")
+        """就地忙碌态反馈（与设置页一致）：禁用按钮 + 文本换成点阵 spinner。"""
+        api = self.app.get_api()
+        button = self.query_one("#reload-api", Button)
+        started = time.monotonic()
+        self._busy.start(button)
         try:
-            result, error = await asyncio.to_thread(self.app.get_api().reload_configs)
+            result, error = await asyncio.to_thread(api.reload_configs)
+            await hold_busy(started)
         except Exception as e:  # noqa: BLE001
+            await hold_busy(started)
             self.app.notify_err(f"重载配置失败: {type(e).__name__}: {e}")
             return
+        finally:
+            self._busy.stop()
         self.app.report("重载配置", result, error)

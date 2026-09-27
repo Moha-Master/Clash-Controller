@@ -400,3 +400,57 @@ def interpret_api_result(action_desc: str, result, error) -> tuple[str, str]:
 
     return (f"{action_desc}失败：{error}", "err")
 
+
+def _brief(raw, limit: int = 120) -> str:
+    """把任意响应体压成一行短文本，供提示栏/通知展示。"""
+    if raw is None:
+        return "无内容"
+    text = " ".join(str(raw).split())
+    if not text:
+        return "无内容"
+    return text[:limit] + "…" if len(text) > limit else text
+
+
+def _transport_hint(error: str) -> str:
+    """把 requests 的传输层错误翻译成人话，认不出来就截断原文。"""
+    low = error.lower()
+    if "connection refused" in low or "connection aborted" in low:
+        return "拒绝连接，请确认 Clash 已启动且控制端口正确"
+    if "max retries exceeded" in low:
+        return "无法连接到端点，请确认 Clash 已启动且地址端口正确"
+    if "timed out" in low:
+        return "连接超时，端点可能未响应"
+    if "name resolution" in low or "failed to resolve" in low or "nodename" in low:
+        return "无法解析主机地址"
+    if "ssl" in low or "certificate" in low:
+        return "TLS 握手失败"
+    if "authorization" in low or "unauthorized" in low:
+        return "鉴权失败，请检查 API 密钥"
+    return _brief(error)
+
+
+def interpret_connect_result(result, error) -> tuple[bool, str]:
+    """解释连接预检查（GET /version）：返回 ``(能否使用, 版本号或失败原因)``。
+
+    只读探测不存在「写操作已发送但断连」的歧义，所以 ``SENT_BUT_DISCONNECTED``
+    在此按连不上处理（写操作仍由 ``interpret_api_result`` 保留原语义）。
+    Clash 对密钥错误返回 401 且带响应体，ClashAPI 会把它当正常结果返回，
+    因此这里必须校验状态码与版本字段，否则会把鉴权失败误判为连接成功。
+    """
+    if error == ClashAPI.SENT_BUT_DISCONNECTED:
+        return False, "未能读回响应，端点可能未启动或未开放控制接口"
+    if error:
+        return False, _transport_hint(str(error))
+    if not isinstance(result, dict):
+        return False, f"端点返回了无法识别的内容：{_brief(result)}"
+
+    status_code = result.get("status_code")
+    if isinstance(status_code, int) and not 200 <= status_code < 300:
+        if status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {status_code}），请检查端点 API 密钥"
+        return False, f"HTTP {status_code}：{_brief(result.get('body') or result.get('message'))}"
+
+    version = result.get("version")
+    if not version:
+        return False, f"响应中没有版本信息，可能不是 Clash 控制接口：{_brief(result)}"
+    return True, str(version)

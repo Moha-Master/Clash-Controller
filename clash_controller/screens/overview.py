@@ -8,12 +8,25 @@ from datetime import datetime
 from rich.text import Text
 from textual import work
 from textual.containers import Horizontal, Vertical
+from textual.dom import NoScreen
 from textual.widgets import DataTable, Static
 
 from ..ui import PageScreen
 from ..widgets import fit_table_columns, hold_busy, load_rows, make_table, shorten
 
 COLUMN_WEIGHTS = [4, 1.5, 1.5, 3, 3]
+
+
+def _attached(widget) -> bool:
+    """控件链是否仍连着屏幕。
+
+    页面退出时 worker 会被取消，而父链可能先于 `is_mounted` 复位被摘掉，
+    这时写 `table.loading` 会抛 NoScreen（覆盖层本来也随页面一起消失了）。
+    """
+    try:
+        return widget.screen is not None
+    except NoScreen:
+        return False
 
 
 class OverviewScreen(PageScreen):
@@ -185,8 +198,9 @@ class OverviewScreen(PageScreen):
                     if self.is_mounted:
                         await hold_busy(started)
                 finally:
-                    table.loading = False
-                if self.is_mounted:
+                    if _attached(table):
+                        table.loading = False
+                if _attached(table):
                     self.call_after_refresh(self._refit)  # 覆盖层撤下后区域宽可能变化，按最终宽度重排
                     table.focus()
 

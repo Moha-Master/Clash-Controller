@@ -34,6 +34,7 @@ class SettingsScreen(PageScreen):
         with Vertical(classes="panel"):
             with Horizontal(classes="filter-row"):
                 yield Static("核心操作", classes="fl-label")
+                yield Button("重载配置", id="reload-conf")
                 yield Button("重载 GEO", id="reload-geo")
             with Horizontal(classes="filter-row gap-top"):
                 yield Static("重启升级", classes="fl-label")
@@ -99,6 +100,10 @@ class SettingsScreen(PageScreen):
         self._call(
             "set_mode", f"切换模式为 {labels.get(mode, mode)}", mode, control_id="st-mode"
         )
+
+    @on(Button.Pressed, "#reload-conf")
+    def _on_reload_conf(self) -> None:
+        self._call("reload_configs", "重载配置", control_id="reload-conf")
 
     @on(Button.Pressed, "#reload-geo")
     def _on_reload_geo(self) -> None:

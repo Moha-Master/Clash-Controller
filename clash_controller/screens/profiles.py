@@ -10,6 +10,7 @@ from textual.screen import Screen
 from textual.widgets import Button, OptionList, Static
 
 from .. import __version__
+from ..api import interpret_connect_result
 from ..config import load_profiles, save_profiles
 from ..deploy import default_endpoint_type
 from ..ui import LOGO_WIDTH, home_col_width, logo_text
@@ -309,33 +310,46 @@ class ProfileListScreen(Screen):
         if error:
             self.app.notify_err(f"{profile.get('name', '?')}: {error}")
             return
+        name = str(profile.get("name", "?") or "?")
+        url = str(profile.get("url", "") or "")
         self.app.set_profile(profile)
-        self.app.add_log(f"Selected profile '{profile.get('name')}'.")
-        self.app.status(f"正在连接 {profile.get('url')} …")
+        self.app.add_log(f"Selected profile '{name}'.")
+        self.app.status(f"正在连接 {url} …")
         started = time.monotonic()
         version_info = None
         api_error = None
         conn_exc: Exception | None = None
-        async with busy(self.app, f"正在连接 {profile.get('url')} …", mode="bar"):
+        async with busy(self.app, f"正在连接 {url} …", mode="bar"):
             try:
                 version_info, api_error = await asyncio.to_thread(self.app.get_api().get_version)
             except Exception as e:  # noqa: BLE001
                 conn_exc = e
             # 本地 API 常在 1 帧内返回，补足最短可见时长，避免进度条「看不见」
             await hold_busy(started)
-        if conn_exc is not None:
-            self.app.notify_err(f"连接失败: {type(conn_exc).__name__}: {conn_exc}")
-            self.app.clear_profile()
-            return
-        if version_info:
-            version = version_info.get("version", "unknown")
-            self.app.add_log(f"Successfully connected to Clash (version: {version}).")
-            from .home import HomeScreen
 
-            self.app.push_screen(HomeScreen())
+        if conn_exc is not None:
+            ok, detail = False, f"{type(conn_exc).__name__}: {conn_exc}"
         else:
-            self.app.notify_err(f"连接失败，请检查端点配置并确认 Clash 正在运行。错误：{api_error}")
+            ok, detail = interpret_connect_result(version_info, api_error)
+
+        if not ok:
+            # 预检查不通过：留在端点选择界面，清掉档案，避免后续页面拿到坏客户端
+            message = f"无法连接端点 {name}（{url}）：{detail}"
+            self.app.add_log(message)
+            self.app.notify_err(message)
             self.app.clear_profile()
+            self.call_after_refresh(self._focus_list)
+            return
+
+        self.app.add_log(f"Successfully connected to Clash (version: {detail}).")
+        self.app.status(f"已连接 {name} · {detail}", "ok")
+        from .home import HomeScreen
+
+        self.app.push_screen(HomeScreen())
+
+    def _focus_list(self) -> None:
+        if self.is_mounted:
+            self.query_one("#pf-list", OptionList).focus()
 
     # ------------------------------------------------------------ 增删改
 
