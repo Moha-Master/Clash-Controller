@@ -320,6 +320,81 @@ class ClashAPI:
         """Update a rule provider."""
         return self._request('PUT', f'/providers/rules/{quote(name)}')
 
+    def update_all_providers(self):
+        """更新所有代理合集 (proxy-providers) 与规则合集 (rule-providers)。
+
+        由于部分内核（如 Clash 原版）可能不支持 rule-provider 或不完全支持 PUT 批量，
+        此处通过遍历获取到的 provider 列表进行逐一更新。
+        """
+        # 1. 获取所有 Proxy Provider
+        proxy_res, err = self.get_proxy_providers()
+        if err:
+            return None, err
+        if isinstance(proxy_res, dict) and proxy_res.get("status_code") in (401, 403):
+            return None, f"鉴权失败 (HTTP {proxy_res.get('status_code')})"
+
+        # 2. 获取所有 Rule Provider
+        rule_res, err = self.get_rule_providers()
+        if err:
+            return None, err
+        if isinstance(rule_res, dict) and rule_res.get("status_code") in (401, 403):
+            return None, f"鉴权失败 (HTTP {rule_res.get('status_code')})"
+
+        # 解析名称列表
+        proxy_names = []
+        if isinstance(proxy_res, dict):
+            providers = proxy_res.get("providers")
+            if isinstance(providers, dict):
+                proxy_names = list(providers.keys())
+
+        rule_names = []
+        if isinstance(rule_res, dict):
+            providers = rule_res.get("providers")
+            if isinstance(providers, dict):
+                rule_names = list(providers.keys())
+
+        total = len(proxy_names) + len(rule_names)
+        if total == 0:
+            return {"status": "success", "message": "未检测到任何 Proxy Provider 或 Rule Provider"}, None
+
+        errors = []
+        success_count = 0
+
+        # 3. 逐一更新
+        for name in proxy_names:
+            res, err = self.update_proxy_provider(name)
+            if err:
+                errors.append(f"代理合集[{name}]: {err}")
+            elif isinstance(res, dict) and res.get("status_code") not in (200, 204) and res.get("status") != "success":
+                msg = res.get("message") or res.get("body") or f"HTTP {res.get('status_code')}"
+                errors.append(f"代理合集[{name}]: {msg}")
+            else:
+                success_count += 1
+
+        for name in rule_names:
+            res, err = self.update_rule_provider(name)
+            if err:
+                errors.append(f"规则合集[{name}]: {err}")
+            elif isinstance(res, dict) and res.get("status_code") not in (200, 204) and res.get("status") != "success":
+                msg = res.get("message") or res.get("body") or f"HTTP {res.get('status_code')}"
+                errors.append(f"规则合集[{name}]: {msg}")
+            else:
+                success_count += 1
+
+        if not errors:
+            return {
+                "status": "success",
+                "message": f"共更新 {len(proxy_names)} 个代理合集、{len(rule_names)} 个规则合集",
+            }, None
+
+        if success_count == 0:
+            return None, f"全部 Provider 更新失败: {'; '.join(errors)}"
+
+        return {
+            "status": "warn",
+            "message": f"成功更新 {success_count}/{total} 个 Provider，失败：{'; '.join(errors)}",
+        }, None
+
     # === Rules ===
     def get_rules(self):
         """Get all rules."""

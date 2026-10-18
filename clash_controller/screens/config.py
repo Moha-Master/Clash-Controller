@@ -52,6 +52,7 @@ class ConfigScreen(PageScreen):
                 yield Button("编辑", id="edit")
                 yield Button("删除", id="delete", variant="error")
                 yield Button("重载配置", id="reload-api")
+                yield Button("更新Provider", id="update-providers")
                 yield Static("", classes="fill")
                 yield Static("单击行 = 部署该提供方", classes="fl-label")
         yield make_table("名称", "地址", id="cf-table")
@@ -268,3 +269,26 @@ class ConfigScreen(PageScreen):
         finally:
             self._busy.stop()
         self.app.report("重载配置", result, error)
+
+    @on(Button.Pressed, "#update-providers")
+    def _on_update_providers(self) -> None:
+        self._update_providers()
+
+    @work(exclusive=True)
+    async def _update_providers(self) -> None:
+        """就地忙碌态反馈：禁用按钮 + 文本换成点阵 spinner。"""
+        api = self.app.get_api()
+        button = self.query_one("#update-providers", Button)
+        started = time.monotonic()
+        self._busy.start(button)
+        try:
+            result, error = await asyncio.to_thread(api.update_all_providers)
+            await hold_busy(started)
+        except Exception as e:  # noqa: BLE001
+            await hold_busy(started)
+            self.app.notify_err(f"更新Provider失败: {type(e).__name__}: {e}")
+            return
+        finally:
+            self._busy.stop()
+        self.app.report("更新Provider", result, error)
+

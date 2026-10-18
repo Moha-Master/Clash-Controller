@@ -35,6 +35,7 @@ class SettingsScreen(PageScreen):
             with Horizontal(classes="filter-row"):
                 yield Static("核心操作", classes="fl-label")
                 yield Button("重载配置", id="reload-conf")
+                yield Button("更新Provider", id="update-providers")
                 yield Button("重载 GEO", id="reload-geo")
             with Horizontal(classes="filter-row gap-top"):
                 yield Static("重启升级", classes="fl-label")
@@ -104,6 +105,10 @@ class SettingsScreen(PageScreen):
     @on(Button.Pressed, "#reload-conf")
     def _on_reload_conf(self) -> None:
         self._call("reload_configs", "重载配置", control_id="reload-conf")
+
+    @on(Button.Pressed, "#update-providers")
+    def _on_update_providers(self) -> None:
+        self._call("update_all_providers", "更新Provider", control_id="update-providers")
 
     @on(Button.Pressed, "#reload-geo")
     def _on_reload_geo(self) -> None:
