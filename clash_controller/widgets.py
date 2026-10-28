@@ -1,7 +1,7 @@
 """共享 UI 组件：确认、输入、多字段表单、输出查看、表格与模糊筛选辅助。
 
 所有模态均为 ModalScreen 泛型返回值，配合 push_screen_wait / 回调消费；
-数据展示统一使用 DataTable（ClickTable 单击执行），不构造字符串伪表格。
+数据展示统一使用 DataTable（ClickTable 单击选中、双击执行），不构造字符串伪表格。
 """
 from __future__ import annotations
 
@@ -627,11 +627,22 @@ class MenuMarquee:
 
 
 class ClickTable(DataTable):
-    """列表即操作的表格：单击数据单元格 = 移动光标并立即发 RowSelected。
+    """可操作表格：单击只选中，双击（或 Enter）才执行。
+
+    ``activate="double"``（默认）：单击数据格只移动光标（发 ``RowHighlighted``，
+    供状态栏 / 控制按钮刷新），``event.chain >= 2``（同格 0.5s 内第二次点击）
+    才发 ``RowSelected``。避免误点一下就把详情 / 表单顶到脸上。
+
+    ``activate="click"``：单击即发 ``RowSelected``，用于「选中即生效」的选择器
+    （如格式列表、纯选择用途的主从列表）。
 
     注意：Textual 沿 MRO 逐类派发事件，重写 `_on_click` 后父类实现仍会被调用一次，
     因此接管分支与回落分支都必须 prevent_default()，防止 RowSelected 双发。
     """
+
+    def __init__(self, *, activate: str = "double", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.activate_mode = "click" if activate == "click" else "double"
 
     async def _on_click(self, event: events.Click) -> None:
         meta = event.style.meta if event.style is not None else {}
@@ -639,20 +650,30 @@ class ClickTable(DataTable):
         col = meta.get("column", -1)
         is_data_cell = (
             self.cursor_type == "row"
-            and isinstance(row, int) and isinstance(col, int)
-            and 0 <= row < self.row_count and col >= 0
+            and isinstance(row, int)
+            and isinstance(col, int)
+            and 0 <= row < self.row_count
+            and col >= 0
             and not meta.get("out_of_bounds", False)
         )
         if is_data_cell:
             self.cursor_coordinate = Coordinate(row, col)
-            self._post_selected_message()
+            if self.activate_mode == "click" or event.chain >= 2:
+                self._post_selected_message()
         else:
             await super()._on_click(event)
         event.prevent_default()
 
 
-def make_table(*headers, cursor: str = "row", zebra: bool = True, classes: str = "tbl", **kwargs) -> ClickTable:
-    dt = ClickTable(cursor_type=cursor, zebra_stripes=zebra, classes=classes, **kwargs)
+def make_table(
+    *headers,
+    cursor: str = "row",
+    zebra: bool = True,
+    classes: str = "tbl",
+    activate: str = "double",
+    **kwargs,
+) -> ClickTable:
+    dt = ClickTable(cursor_type=cursor, zebra_stripes=zebra, classes=classes, activate=activate, **kwargs)
     dt.add_columns(*headers)
     return dt
 

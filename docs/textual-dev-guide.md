@@ -553,19 +553,22 @@ class Page(Screen):
 
 ### 5.1 DataTable / OptionList 点击行为（实测）
 
-- **DataTable**：App 合成 `events.Click`（无独立 DoubleClick 事件，用 `Click.chain` 计数，`app.py:4100-4118`）。`_on_click` 逻辑：单击**只移动光标，不发选中消息**；当点击格与当前光标重合时 `_post_selected_message()` → `RowSelected`。实测：第 1 击 cursor→行；第 2 击同格→RowSelected；`pilot.double_click`→cursor+RowSelected 各一；点不同格不触发选中；表头点击发 `HeaderSelected`（列排序挂这个）。
+- **DataTable**：App 合成 `events.Click`（无独立 DoubleClick 事件，用 `Click.chain` 计数，`app.py:4100-4118`）。`_on_click` 逻辑：单击**只移动光标，不发选中消息**；当点击格与当前光标重合时 `_post_selected_message()` → `RowSelected`。实测：第 1 击 cursor→行；第 2 击同格→RowSelected；`pilot.double_click`→cursor+RowSelected 各一；点不同格不触发选中；表头点击发 `HeaderSelected`（列排序挂这个）。项目内实际使用的是 `widgets.ClickTable`（单击只选中、双击才执行），见 5.2。
 - **OptionList**：单击 = 立即 `highlighted` + `action_select()` → 发 `OptionSelected`（实测 highlight 变 1）。即"单击即选中"，无双击语义。
 - **`.instant` 样式类**：**8.2.8 本地源码全库检索不存在**（含 .css/.py，无此机制、无文档字符串）。若诉求是"去掉点击/滚动动画"：`App.animation_level = "none"`（`app.py:838`），按钮按压动画用 `Button.active_effect_duration = 0`；网上教程里的 `instant` 类名不属于本版本，勿抄。
 
-### 5.2 单击选中 → 进入编辑的推荐交互
+### 5.2 单击选中 → 双击进入（项目统一实现）
 
-DataTable 模式与键盘习惯统一：
-1. 单击：移动光标（选中态由 `cursor_type="row"` 高亮呈现）；
-2. 双击同一行：触发 `RowSelected` → `@on(DataTable.RowSelected)` 打开 `RecordFormModal`（项目现有代码天然兼容，双击即可进入编辑，无需改）；
-3. 键盘：Enter 同发 `RowSelected`；`F2` 可另绑"编辑当前行"：`Binding("f2", "edit_row")`（键名已验证）；
-4. 需要"单击即开编辑"的（如设置页两行小表），给表加 `Binding` 或直接监听 `CursorMoved`？——8.2.8 无 `CursorMoved` 消息（本版本消息集：`CellHighlighted/RowHighlighted/ColumnHighlighted/CellSelected/RowSelected/ColumnSelected/HeaderSelected/RowLabelSelected`），单击即编辑建议仍走双击/Enter，或挂 `@on(DataTable.RowHighlighted)` 仅做预览。
+原生 DataTable 的语义是「单击移光标；点当前光标所在格才发 `RowSelected`」——第二击不看时间窗口，容易误触。项目统一用 `widgets.ClickTable` 把语义收紧为：
 
-**陷阱**：`RowHighlighted` 在鼠标 hover/键盘移动时高频触发，里面只做轻量刷新（`row_selected` 才开弹窗）；`row_key` 与 `cursor_row` 都在消息对象上，筛选重排后优先用 `row_key` 反查数据。
+1. 单击数据格：只移动光标（`RowHighlighted` 照常发出，状态栏 / 控制按钮据此刷新），**不发** `RowSelected`；
+2. 同格 0.5s 内的第二击（`events.Click.chain >= 2`）：发一次 `RowSelected` → `@on(DataTable.RowSelected)` 打开详情 / 表单；
+3. 键盘：`Enter` 仍走 `DataTable.action_select_cursor`，与双击等价；
+4. 选择器表格（选中即生效，如格式列表、主从列表的从属表）传 `activate="click"`，恢复单击即发 `RowSelected`。
+
+`chain` 由 App 合成（`app.py`：同位置 + `CLICK_CHAIN_TIME_THRESHOLD = 0.5s` 内累加），无需自己计时；`pilot.click(..., times=2)` 会产生 `chain=1,2` 两个事件，可直接用于测试。
+
+**陷阱**：`RowHighlighted` 在鼠标 hover/键盘移动时高频触发，里面只做轻量刷新（`RowSelected` 才开弹窗）；`row_key` 与 `cursor_row` 都在消息对象上，筛选重排后优先用 `row_key` 反查数据。
 
 ---
 
@@ -630,10 +633,12 @@ app.theme = "aliyun"
 - **`Switch`（8.2.8）**：`value` 为 bool（`is True` 可直接比较），单击整个控件即切换（`_on_click → toggle`），Enter/Space 同；适合做表单里的布尔条目。
 - **表单弹窗纵向空间**：`> .modal-box { min-height: N }` + body `height: 1fr`，容器被 min-height 撑开时 fr 子项吃到多余空间、`dock: bottom` 按钮栏仍贴底。
 
-### 8.1 单击执行表格（ClickTable 配方）
+### 8.1 双击执行表格（ClickTable 配方）
 
-- `ClickTable(DataTable)` 重写 `on_click`：从 `event.style.meta` 读 `row/column`，命中数据格（`0 <= row < row_count`、`col >= 0`、非 `out_of_bounds`）时 `cursor_coordinate = Coordinate(row, col)` + `_post_selected_message()` 并 `return`；表头/行标签等回落到 `await super()._on_click(event)`。
-- 派发顺序依据 `message_pump._get_dispatch_methods`：按 MRO 逐类取 `cls.__dict__["_on_click"] or cls.__dict__["on_click"]`，所以子类的 `on_click` 先执行、原生 `_on_click` 随后（移动光标/表头消息不受影响），键盘 Enter 的 `RowSelected` 语义保留。
+- `ClickTable(DataTable)` 重写 `_on_click`：从 `event.style.meta` 读 `row/column`，命中数据格（`0 <= row < row_count`、`col >= 0`、非 `out_of_bounds`）时 `cursor_coordinate = Coordinate(row, col)`；仅当 `activate_mode == "click"` 或 `event.chain >= 2` 才 `_post_selected_message()`；表头/行标签等回落到 `await super()._on_click(event)`。
+- `make_table(..., activate="double")` 是默认签名；选择器表格显式传 `activate="click"`。构造参数用关键字传入，避免与 DataTable 的既有参数冲突。
+- 派发顺序依据 `message_pump._get_dispatch_methods`：按 MRO 逐类取 `cls.__dict__["_on_click"] or cls.__dict__["on_click"]`，所以子类的 `_on_click` 先执行、原生 `_on_click` 随后（移动光标/表头消息不受影响），键盘 Enter 的 `RowSelected` 语义保留。
+- 单双击判定不要自己计时：`events.Click.chain` 已由 App 按「同位置 + 0.5s」累加。
 - 屏幕级 `on_click`（如 PageScreen 收起浮层）收到的是冒泡 Click，`event.x/y` 为屏幕坐标，配合 `Region.contains(x, y)` 判断点击是否在浮层外。
 
 ### 8.2 DataTable 列宽
@@ -642,7 +647,7 @@ app.theme = "aliyun"
 - 动态铺满：改 `column.width` 后需 `column.auto_width = False` + `table.refresh(layout=True)`（封装为 `widgets.fit_table_columns`）。
 - 无列对齐属性：右对齐用前导空格（`rcell`，按 `rich.cells.cell_len` 补位），表头同样处理；`Column.label` 可赋值更新。
 
-### 8.3 DataTable 单击执行的双派发坑
+### 8.3 DataTable 点击执行的双派发坑
 
 - Textual 沿 MRO 逐类查找事件 handler（`message_pump._get_dispatch_methods`）：子类定义 `on_click`/`_on_click` 后，**父类 `DataTable._on_click` 仍会被派发一次**。重写点击时必须对接管与回落两条路径都 `event.prevent_default()`，否则光标移动/`RowSelected` 双发（表现为 push 两次、需要按两次 Esc）。
 - Click/Mouse 事件冒泡到 Screen 时 `event.x/y` 会被改写成相对坐标；判断“点在哪”一律用 `event.screen_x/screen_y`。

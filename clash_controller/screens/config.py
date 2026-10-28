@@ -30,7 +30,7 @@ COLUMN_WEIGHTS = [2, 7]
 
 class ConfigScreen(PageScreen):
     TITLE = "配置管理"
-    HINT = "↑↓ 移动 · 回车 / 单击 拉取并部署所选 · Ctrl+N 新增 · Ctrl+E 编辑 · Ctrl+D 删除 · Ctrl+R 刷新 · Esc/Ctrl+C 返回"
+    HINT = "↑↓ 移动 · 回车 / 双击 拉取并部署所选 · Ctrl+N 新增 · Ctrl+E 编辑 · Ctrl+D 删除 · Ctrl+R 刷新 · Esc/Ctrl+C 返回"
 
     BINDINGS = [
         Binding("ctrl+n", "add_provider", show=False),
@@ -54,7 +54,7 @@ class ConfigScreen(PageScreen):
                 yield Button("重载配置", id="reload-api")
                 yield Button("更新Provider", id="update-providers")
                 yield Static("", classes="fill")
-                yield Static("单击行 = 部署该提供方", classes="fl-label")
+                yield Static("双击行 = 部署该提供方", classes="fl-label")
         yield make_table("名称", "地址", id="cf-table")
 
     def on_mount(self) -> None:
