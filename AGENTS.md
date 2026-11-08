@@ -234,13 +234,14 @@ clash_controller/
   main.py / __main__.py   入口：argparse(-D/--dir, --debug, --version) + App().run()
   app.py                  ClashControllerApp：档案/客户端缓存、状态栏、日志、report()
   config.py               profiles.json / config_providers.json 读写（纯数据）
-  api.py                  ClashAPI（(result, error) 契约）+ interpret_api_result
+  api.py                  ClashAPI（(result, error) 契约）+ interpret_api_result / interpret_delay_result
+  proxies.py              策略组 / 节点 / provider 归一化（纯数据，零 Textual 依赖）
   ssh.py                  SSH / 本地文件部署服务层
   deploy.py               provider 拉取、当前配置读取、更新决策
   ui.py                   界面骨架：PageScreen / logo 常量（8.x 特性集中在这里）
   widgets.py              模态 + 表格与模糊筛选辅助（比 aliyun 多 textarea 字段）
   app.tcss                全局样式（模态三段式、顶栏、kv-row、home banner、状态栏）
-  screens/                profiles(根屏) / home / overview / config / settings / logs
+  screens/                profiles(根屏) / home / overview / nodes / config / settings / logs
 ```
 
 分层与服务约定见第一部分 §2；本项目服务层特有：
@@ -252,8 +253,9 @@ clash_controller/
 ## 本项目界面实例（对第一部分规范的映射）
 
 - 根屏 `ProfileListScreen`：Screen 变体（居中 + CLASH 大 logo + 选项列表 OptionList，按数字 1-9 快捷连接，`[＋ 新增端点][编辑][删除]` 按钮居中；端点名 shorten 到 14 列、`URL · 类型` 描述右对齐超宽跑马灯；`Esc`/`Ctrl+C` 退出，不绑 `q`）。
-- 首页：CLASH logo（`LOGO_WIDTH` 自动计算，窄于 `LOGO_WIDTH+6` 降级）+ 4 菜单项（概览/配置/设置/切换端点），描述右对齐、超宽跑马灯；数字 1-4、`Esc`/`Ctrl+C` 退出（切换端点走菜单项 `4`），不绑 `q`。
-- 概览页：上 `.panel` 一组 kv 行（版本/流量/内存/连接），数据来自流式与每秒轮询；下接活动连接表 DataTable（每秒刷新）。
+- 首页：CLASH logo（`LOGO_WIDTH` 自动计算，窄于 `LOGO_WIDTH+6` 降级）+ 5 菜单项（概览/节点/配置/设置/切换端点），描述右对齐、超宽跑马灯；数字 1-5、`Esc`/`Ctrl+C` 退出（切换端点走菜单项 `5`），不绑 `q`。
+- 概览页：一个 `.panel` 内先放 kv 行（版本/流量/内存/连接汇总），再以两行 `.filter-row.gap-top` 放筛选（单行 compact 关键字 Input、节点 Select、隐藏 DIRECT Switch）与排序（排序键 Select、升降序 Button），下接活动连接表 DataTable（每秒刷新）。排序首项为「默认」（API 原始顺序，默认值），此时升降序按钮禁用。速度由相邻两次轮询的累计字节差算出（新连接首轮显示 `—`），筛选/排序在本地内存数据上完成，不额外请求 API；刷新时按连接 id 保持光标行。
+- 节点页：`.panel` 内两行 `.filter-row`（策略组 Select 宽 24 / 排序 Select 宽 12 / 单行 compact 名称 Input；测节点 / 测整组 / 指定 / 恢复自动 + 右侧统计）+ 成员 ClickTable（名称 ✓ 前缀 / 类型 / UDP / 延迟 / 来源）。数据来自 `GET /proxies` 与 `GET /providers/proxies`，由 `proxies.build_snapshot()` 归一化（组带 `all`、节点无；provider 过滤 `default` / `Compatible`；GLOBAL 最后）。延迟取 `history[-1]`，无则取 `extra` 中最晚记录；`0` 显示「失败」、`None` 显示「未测」，测速中显示「测试中」。provider 节点单测必须走 `/providers/proxies/{p}/{n}/healthcheck`；普通节点走 `/proxies/{n}/delay`。手动指定走 `PUT /proxies/{group}`，恢复自动走 `DELETE /proxies/{group}`（URLTest / Fallback 的 `fixed` 语义）；整组测速前若存在 `fixed` 必须先确认（内核会清除固定）。
 - 配置页：`.filter-row` [拉取并部署][＋ 新增][编辑][删除][重载配置] + ClickTable，**双击行 = 拉取比对部署**（后续 ConfirmModal 把关）；列 cap 名称 24 / url 100。
 - 设置页：顶栏副标题为当前端点名称。首个 `.panel` 容器含 `TUN [Switch]` 与 `模式 [Select]` 即时控制项（无需保存）；第二个 `.panel`（核心操作 / 重启升级按钮组）与表格/内容同列；「查看应用日志」在右上角 ⋮ 折叠菜单。
 - 日志页：`RichLog(classes="tbl")`，reload_page 全量重放 `app.app_logs`。
@@ -287,6 +289,8 @@ clash_controller/
 - 概览页离开时 worker 会被取消，父链会先于 `is_mounted` 复位被摘掉，`finally` 里写 `table.loading` / `table.focus()` 会抛 `NoScreen`（历史事故：在覆盖层 `hold_busy` 期间按 Esc 离开概览，整个应用报错退出）。统一用 `overview._attached(widget)`（判定 `widget.screen` 可达）再撤覆盖层 / 移焦点，`is_mounted` 救不了这个场景（见第一部分 §12）。
 - 设置页异步下发不再用顶栏 spinner，改用 `widgets.ControlBusy`：禁用触发控件 + 把控件文本换成点阵 spinner（Button 改 `label`，Select/Switch 改同行标签 `Static`），完成复原；调用 `_call(..., control_id=...)` 传入触发控件 id。超长标题由 `#busy-title` 的 `text-overflow: ellipsis` 统一截断。配置页「重载配置」走同一套（`ControlBusy` + `hold_busy`，异常 / 取消路径也复原）；设置页「核心操作」行另有 `#reload-conf` 按钮，同样经 `_call(..., control_id="reload-conf")`。
 - 端点连接预检查统一走 `api.interpret_connect_result()`（只读探测）：本地 `SENT_BUT_DISCONNECTED` 按失败处理并翻译成人话，401/403、非 2xx、缺 `version` 字段一律判连不上（`_request` 会把 401 响应体当**正常结果**返回，旧逻辑 `if version_info:` 会把密钥错误误判成连接成功而推入首页）；失败时留在选择屏 + `clear_profile` + 写日志。写操作仍走 `interpret_api_result` 保留「已发送但断连」哨兵语义，勿改。
+- 表格里的中文状态列（如节点页「延迟」的 `测试中` / `未测` / `失败`）右对齐要用 `Text(text, justify="right")`：Rich 按**实际列宽**（含 CJK 双宽）补齐；不要用 `str.rjust(width)`，它按字符数补空格，中文标签会超出列宽被裁掉，宽终端下也对不齐。
+- 内核**没有** `DELETE /group/{name}`（groupRouter 只有 GET）：恢复自动（清除 URLTest / Fallback 的 `fixed`）必须用 `DELETE /proxies/{name}`；`GET /group/{name}/delay` 本身也会先清除 `fixed`，所以整组测速前必须确认。provider 节点不在 `/proxies` 顶层字典里，单节点测速必须走 `/providers/proxies/{p}/{n}/healthcheck`，否则 404。所有 proxy / group / provider 路径参数统一 `quote(name, safe='')`（名字可能含 `/`）；测速请求 `_request(..., retry=False)`，避免 ReadTimeout 自动重试重复打内核。
 
 ## 依赖与质量
 
@@ -295,7 +299,7 @@ clash_controller/
 
 ## 验证（本项目脚本）
 
-- `/tmp/opencode/clash_check.py`（纯逻辑 + 基础挂载）、`/tmp/opencode/clash_ui_check.py`（55 断言：根屏/单击连接与双击部署/Ctrl 键位/模态紧凑/switch/浮层菜单/Esc 层级/流式面板/窄终端 44 列）、`/tmp/opencode/clash_loading_check.py`（11 断言：概览覆盖层/轮询不闪/设置就地忙碌态），可作新脚本模板。
+- `/tmp/opencode/clash_check.py`（纯逻辑 + 基础挂载）、`/tmp/opencode/clash_ui_check.py`（55 断言：根屏/单击连接与双击部署/Ctrl 键位/模态紧凑/switch/浮层菜单/Esc 层级/流式面板/窄终端 44 列）、`/tmp/opencode/clash_loading_check.py`（11 断言：概览覆盖层/轮询不闪/设置就地忙碌态）、`/tmp/opencode/overview_filter_check.py`（概览筛选/排序/列宽）、`/tmp/opencode/nodes_check.py`（节点页：归一化逻辑、组下拉与隐藏组、延迟/失败/未测、排序沉底、搜索、指定/恢复自动、provider 作用域测速、整组确认与 504、列宽与单滚动条、120×40 + 80×24），可作新脚本模板。
 - 做法：`CLASH_CONTROLLER_CONFIG_DIR` 指向临时目录并写 `profiles.json` / `config_providers.json`；`app.get_api = lambda: FakeAPI()` 屏蔽网络；FakeAPI 要带状态（`toggle_tun`/`set_mode` 改变 `get_configs` 返回值）。
 
 ## 提交

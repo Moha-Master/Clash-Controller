@@ -119,7 +119,11 @@ def filter_fuzzy(items: list, needle: str, key: Callable[[Any], str]) -> list:
 # ---------------------------------------------------------------- 确认弹窗
 
 class ConfirmModal(ModalScreen[bool]):
-    """通用确认框：三段式（标题栏 / 内容 / 按钮栏）。回车 = 确认，Esc / 取消 = 否。"""
+    """通用确认框：三段式（标题栏 / 内容 / 按钮栏）。
+
+    回车 = 确认；``default_yes=False``（不可逆操作）时回车不直接放行，须点确认按钮。
+    Esc / 取消 = 否。
+    """
 
     DEFAULT_CSS = """
     ConfirmModal { align: center middle; }
@@ -150,7 +154,10 @@ class ConfirmModal(ModalScreen[bool]):
         if event.key == "enter":
             event.stop()
             event.prevent_default()
-            self.dismiss(True)
+            # default_yes=False 表示不可逆操作：回车不直接放行，必须点按钮确认
+            # （Tab 到按钮再回车等价于点击，由 Button 自己处理）。
+            if self.default_yes:
+                self.dismiss(True)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")

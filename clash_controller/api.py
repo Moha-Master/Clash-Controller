@@ -54,7 +54,10 @@ class ClashAPI:
         except Exception:
             return False
 
-    def _request(self, method, endpoint, params=None, json_data=None, stream=False):
+    def _request(
+        self, method, endpoint, params=None, json_data=None, stream=False,
+        timeout: float | None = None, retry: bool = True,
+    ):
         """Helper method to make requests to the API.
 
         Behavior changes:
@@ -62,8 +65,10 @@ class ClashAPI:
         - Treats PUT /configs ReadTimeout conservatively as success (server-side reload may have completed).
         - For streaming requests (stream=True) returns the raw response object so callers can iterate.
         - When debug=True, emits basic request/response information via the log callback.
+        - ``timeout``（秒）覆盖本次请求超时；``retry=False`` 时 ReadTimeout 不重试（测速不能重复打内核）。
         """
         url = f"{self.base_url}{endpoint}"
+        effective_timeout = self.timeout if timeout is None else timeout
 
         def do_request(timeout_val):
             return self.session.request(
@@ -79,11 +84,11 @@ class ClashAPI:
         try:
             if self.debug:
                 try:
-                    self._log(f"[DEBUG] Request: {method} {url}\n  headers={self.headers}\n  params={params}\n  json={json_data}\n  stream={stream}\n  timeout={self.timeout}")
+                    self._log(f"[DEBUG] Request: {method} {url}\n  headers={self.headers}\n  params={params}\n  json={json_data}\n  stream={stream}\n  timeout={effective_timeout}")
                 except Exception:
                     pass
 
-            response = do_request(self.timeout)
+            response = do_request(effective_timeout)
 
             # If caller requested streaming, return the raw response so the caller can iterate
             if stream:
@@ -116,6 +121,11 @@ class ClashAPI:
             return {"body": parsed, "status_code": response.status_code}, None
 
         except requests.exceptions.ReadTimeout as e:
+            # 测速等场景不能重试（会重复打内核），由调用方显式关闭。
+            if not retry:
+                if self.debug:
+                    self._log("[DEBUG] ReadTimeout occurred, retry disabled")
+                return None, "请求超时"
             # Retry once with an increased timeout. If retry fails due to
             # connection problems and the API is local, return the sentinel so
             # caller can ask user to verify the outcome manually.
@@ -267,16 +277,24 @@ class ClashAPI:
 
     def get_proxy(self, name: str):
         """Get a specific proxy or group's information."""
-        return self._request('GET', f'/proxies/{quote(name)}')
+        return self._request('GET', f'/proxies/{quote(name, safe="")}')
 
     def select_proxy_in_group(self, group_name: str, proxy_name: str):
         """Select a proxy for a specific group."""
-        return self._request('PUT', f'/proxies/{quote(group_name)}', json_data={"name": proxy_name})
+        return self._request('PUT', f'/proxies/{quote(group_name, safe="")}', json_data={"name": proxy_name})
 
-    def test_proxy_delay(self, name: str, url: str, timeout: int):
-        """Test a proxy's delay."""
+    def test_proxy_delay(self, name: str, url: str, timeout: int = 5000, expected=None):
+        """Test a proxy's delay (timeout 单位为毫秒，内核限制 <= 32767)。"""
         params = {'url': url, 'timeout': str(timeout)}
-        return self._request('GET', f'/proxies/{quote(name)}/delay', params=params)
+        if expected:
+            params['expected'] = str(expected)
+        return self._request(
+            'GET',
+            f'/proxies/{quote(name, safe="")}/delay',
+            params=params,
+            timeout=timeout / 1000 + 10,
+            retry=False,
+        )
 
     def get_groups(self):
         """Get policy groups."""
@@ -284,16 +302,31 @@ class ClashAPI:
 
     def get_group(self, name: str):
         """Get a specific policy group."""
-        return self._request('GET', f'/group/{quote(name)}')
+        return self._request('GET', f'/group/{quote(name, safe="")}')
 
     def reset_auto_group_selection(self, name: str):
-        """Reset the fixed selection of an auto policy group."""
-        return self._request('DELETE', f'/group/{quote(name)}')
+        """Reset the fixed selection of an auto policy group.
 
-    def test_group_delay(self, name: str, url: str, timeout: int):
-        """Test the delay of all proxies in a group."""
+        内核没有 ``DELETE /group/{name}``；清除 URLTest / Fallback 的 fixed 走
+        ``DELETE /proxies/{name}``（仅 SelectAble 且非 Selector 的组返回 204）。
+        """
+        return self._request('DELETE', f'/proxies/{quote(name, safe="")}')
+
+    def test_group_delay(self, name: str, url: str, timeout: int = 5000, expected=None):
+        """Test the delay of all proxies in a group.
+
+        注意：该端点会先清除 URLTest / Fallback 的 fixed，再并发测试成员。
+        """
         params = {'url': url, 'timeout': str(timeout)}
-        return self._request('GET', f'/group/{quote(name)}/delay', params=params)
+        if expected:
+            params['expected'] = str(expected)
+        return self._request(
+            'GET',
+            f'/group/{quote(name, safe="")}/delay',
+            params=params,
+            timeout=timeout / 1000 + 10,
+            retry=False,
+        )
 
     # === Providers ===
     def get_proxy_providers(self):
@@ -302,15 +335,32 @@ class ClashAPI:
 
     def get_proxy_provider(self, name: str):
         """Get a specific proxy provider."""
-        return self._request('GET', f'/providers/proxies/{quote(name)}')
+        return self._request('GET', f'/providers/proxies/{quote(name, safe="")}')
 
     def update_proxy_provider(self, name: str):
         """Update a proxy provider."""
-        return self._request('PUT', f'/providers/proxies/{quote(name)}')
+        return self._request('PUT', f'/providers/proxies/{quote(name, safe="")}')
 
     def healthcheck_proxy_provider(self, name: str):
         """Trigger a health check for a proxy provider."""
-        return self._request('GET', f'/providers/proxies/{quote(name)}/healthcheck')
+        return self._request('GET', f'/providers/proxies/{quote(name, safe="")}/healthcheck')
+
+    def test_provider_proxy_delay(self, provider: str, node: str, url: str, timeout: int = 5000, expected=None):
+        """Test a single provider node's delay.
+
+        provider 节点不在 ``/proxies`` 顶层字典里，单测必须走 provider 作用域
+        （``/providers/proxies/{provider}/{node}/healthcheck``），否则 404。
+        """
+        params = {'url': url, 'timeout': str(timeout)}
+        if expected:
+            params['expected'] = str(expected)
+        return self._request(
+            'GET',
+            f'/providers/proxies/{quote(provider, safe="")}/{quote(node, safe="")}/healthcheck',
+            params=params,
+            timeout=timeout / 1000 + 10,
+            retry=False,
+        )
 
     def get_rule_providers(self):
         """Get all rule providers."""
@@ -318,7 +368,7 @@ class ClashAPI:
 
     def update_rule_provider(self, name: str):
         """Update a rule provider."""
-        return self._request('PUT', f'/providers/rules/{quote(name)}')
+        return self._request('PUT', f'/providers/rules/{quote(name, safe="")}')
 
     def update_all_providers(self):
         """更新所有代理合集 (proxy-providers) 与规则合集 (rule-providers)。
@@ -474,6 +524,70 @@ def interpret_api_result(action_desc: str, result, error) -> tuple[str, str]:
         return (f"{action_desc}完成：{str(result.get('info'))[:2000]}", "ok")
 
     return (f"{action_desc}失败：{error}", "err")
+
+
+DELAY_OK = "ok"
+DELAY_TIMEOUT = "timeout"
+DELAY_ERROR = "error"
+
+
+def _delay_error_kind(error) -> str | None:
+    """把传输层错误归一化为 timeout / error；无错误返回 None。"""
+    if error == ClashAPI.SENT_BUT_DISCONNECTED:
+        return DELAY_TIMEOUT
+    if not error:
+        return None
+    low = str(error).lower()
+    if "timeout" in low or "timed out" in low or "超时" in low:
+        return DELAY_TIMEOUT
+    return DELAY_ERROR
+
+
+def interpret_delay_result(result, error) -> tuple[str, int | None]:
+    """解释单节点测速结果：``(DELAY_OK|DELAY_TIMEOUT|DELAY_ERROR, 毫秒或 None)``。
+
+    内核把 504 当正常响应体返回（ClashAPI 不抛异常），因此必须读 ``status_code``。
+    """
+    kind = _delay_error_kind(error)
+    if kind is not None:
+        return kind, None
+    if not isinstance(result, dict):
+        return DELAY_ERROR, None
+    status_code = result.get("status_code")
+    if status_code == 504:
+        return DELAY_TIMEOUT, None
+    if status_code in (400, 404, 503):
+        return DELAY_ERROR, None
+    if status_code != 200:
+        return DELAY_ERROR, None
+    delay = result.get("delay")
+    if isinstance(delay, bool) or not isinstance(delay, int) or delay <= 0:
+        return DELAY_ERROR, None
+    return DELAY_OK, delay
+
+
+def interpret_group_delay_result(result, error) -> tuple[str, dict[str, int]]:
+    """解释整组测速结果：``(状态, {节点名: 毫秒})``；只有整数项被保留。"""
+    kind = _delay_error_kind(error)
+    if kind is not None:
+        return kind, {}
+    if not isinstance(result, dict):
+        return DELAY_ERROR, {}
+    status_code = result.get("status_code")
+    if status_code == 504:
+        return DELAY_TIMEOUT, {}
+    if status_code in (400, 404, 503):
+        return DELAY_ERROR, {}
+    if status_code != 200:
+        return DELAY_ERROR, {}
+    mapping: dict[str, int] = {}
+    for key, value in result.items():
+        if key == "status_code":
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        mapping[str(key)] = value
+    return DELAY_OK, mapping
 
 
 def _brief(raw, limit: int = 120) -> str:

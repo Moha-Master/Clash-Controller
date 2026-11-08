@@ -112,6 +112,35 @@ Button:disabled {
     margin-left: 2;
 }
 
+/* 概览页连接筛选：Select 显式定宽（否则内部 1fr 标签会吃掉整行），Switch 压成单行 */
+#cn-node {
+    width: 20;
+}
+
+#cn-sort {
+    width: 14;
+}
+
+/* 节点页：策略组 / 排序下拉显式定宽（Select 内部 1fr 标签会吃掉整行） */
+#nd-group {
+    width: 24;
+}
+
+#nd-sort {
+    width: 12;
+}
+
+.filter-row Switch {
+    height: 1;
+    border: none;
+    padding: 0 1;
+    margin-left: 1;
+}
+
+.filter-row Switch:focus {
+    background-tint: $foreground 8%;
+}
+
 /* ---------- 表格 ---------- */
 .tbl {
     height: 1fr;

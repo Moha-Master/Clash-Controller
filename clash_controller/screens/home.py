@@ -12,7 +12,7 @@ from ..widgets import HintBar, MenuMarquee
 
 
 class HomeScreen(Screen):
-    """功能主菜单：概览 / 配置管理 / 设置 / 切换端点。"""
+    """功能主菜单：概览 / 节点 / 配置管理 / 设置 / 切换端点。"""
 
     def __init__(self) -> None:
         super().__init__(classes="logo-page")
@@ -20,13 +20,15 @@ class HomeScreen(Screen):
     BINDINGS = [
         Binding("escape,ctrl+c", "menu('quit')", "退出"),
         Binding("1", "menu('overview')", "概览", show=False),
-        Binding("2", "menu('configuration')", "配置", show=False),
-        Binding("3", "menu('settings')", "设置", show=False),
-        Binding("4", "menu('switch')", "端点", show=False),
+        Binding("2", "menu('nodes')", "节点", show=False),
+        Binding("3", "menu('configuration')", "配置", show=False),
+        Binding("4", "menu('settings')", "设置", show=False),
+        Binding("5", "menu('switch')", "端点", show=False),
     ]
 
     ITEMS = [
         ("overview", "概览", "流量 / 内存 / 活动连接实时监控"),
+        ("nodes", "节点", "策略组成员 / 延迟测速 / 手动指定"),
         ("configuration", "配置管理", "配置提供方与拉取部署"),
         ("settings", "设置", "TUN / 模式 / 重载 / 升级 / 日志"),
         ("switch", "切换端点", "返回端点选择"),
@@ -40,7 +42,7 @@ class HomeScreen(Screen):
                 name = (self.app.profile or {}).get("name", "")
                 yield Static(f"v{__version__}" + (f" · {name}" if name else ""), id="home-version")
                 yield OptionList(id="home-list")
-        yield HintBar("↑↓ 选择 · 回车 进入 · 1-4 直达 · Esc/Ctrl+C 退出", classes="page-hint")
+        yield HintBar("↑↓ 选择 · 回车 进入 · 1-5 直达 · Esc/Ctrl+C 退出", classes="page-hint")
 
     def on_mount(self) -> None:
         ol = self.query_one("#home-list", OptionList)
@@ -66,11 +68,14 @@ class HomeScreen(Screen):
 
     def _open(self, key: str) -> None:
         from .config import ConfigScreen
+        from .nodes import NodeScreen
         from .overview import OverviewScreen
         from .settings import SettingsScreen
 
         if key == "overview":
             self.app.push_screen(OverviewScreen())
+        elif key == "nodes":
+            self.app.push_screen(NodeScreen())
         elif key == "configuration":
             self.app.push_screen(ConfigScreen())
         elif key == "settings":
