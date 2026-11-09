@@ -275,7 +275,7 @@ class OverviewScreen(PageScreen):
                     break
                 if not line:
                     continue
-                text = line.decode("utf-8")
+                text = line.decode("utf-8", errors="replace")
                 if text.startswith("data: "):
                     text = text[len("data: "):]
                 try:

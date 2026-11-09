@@ -9,7 +9,14 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Static
 
 from ..config import load_config_providers, save_config_providers
-from ..deploy import compute_sha256, evaluate_update, fetch_remote_config, read_current_config
+from ..deploy import (
+    canonical_config_bytes,
+    compute_sha256,
+    evaluate_update,
+    fetch_remote_config,
+    read_current_config,
+)
+from ..platform_utils import IS_WINDOWS
 from ..ssh import apply_local_config_file, apply_remote_config_via_ssh
 from ..ui import PageScreen
 from ..widgets import (
@@ -26,6 +33,14 @@ from ..widgets import (
 )
 
 COLUMN_WEIGHTS = [2, 7]
+
+
+def _canonical_or_raw(data: bytes) -> bytes:
+    """本地配置优先按规范化 UTF-8 比较；非文本内容退化为原始字节比较。"""
+    try:
+        return canonical_config_bytes(data)
+    except RuntimeError:
+        return data
 
 
 class ConfigScreen(PageScreen):
@@ -202,7 +217,7 @@ class ConfigScreen(PageScreen):
                 self.app.notify_err(f"拉取或读取配置失败: {type(e).__name__}: {e}")
                 return
 
-            local_hash = compute_sha256(local_bytes)
+            local_hash = compute_sha256(_canonical_or_raw(local_bytes))
             decision = evaluate_update(remote_hash, remote_mod_time, local_hash, local_mtime)
 
             proceed = True
@@ -226,7 +241,7 @@ class ConfigScreen(PageScreen):
                 self.app.add_log("Config update cancelled by user after comparison.")
                 return
 
-            ov.set_message("正在部署配置…")
+            ov.set_message("正在部署配置…（如弹出 UAC 请允许）" if IS_WINDOWS else "正在部署配置…")
             try:
                 if profile.get("endpoint_type") == "remote":
                     self.app.add_log("Deploying config to remote endpoint via SSH.")
@@ -235,7 +250,9 @@ class ConfigScreen(PageScreen):
                     )
                 else:
                     self.app.add_log("Deploying config to local endpoint file.")
-                    await asyncio.to_thread(apply_local_config_file, profile, remote_payload)
+                    await asyncio.to_thread(
+                        apply_local_config_file, profile, remote_payload, self.app.add_log
+                    )
             except Exception as e:  # noqa: BLE001
                 self.app.notify_err(f"部署配置失败: {type(e).__name__}: {e}")
                 return

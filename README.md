@@ -69,6 +69,12 @@ clashctl -D /path/to/config/dir   # 指定配置目录（默认 ~/.config/clash-
 clashctl --debug                  # 启用 API / SSH 调试日志（显示在应用日志页）
 ```
 
+## Windows 说明
+
+- Clash 配置目录默认从 `%USERPROFILE%\.config\clash` / `%USERPROFILE%\.config\mihomo` 探测，也可在端点里手动填写。
+- 若配置目录位于 `Program Files`、`ProgramData` 等受保护位置，部署时会弹出 UAC 请求管理员写入；请在端点设置中保持“管理员写入 (UAC)”开启。
+- 订阅与本地配置会按 UTF-8 / GB18030 / 带 BOM 的 UTF-16 自动识别，并统一以 UTF-8（无 BOM、LF 换行）写入，不会再把中文变成乱码；控制 API 响应体同样按字节解码，中文节点名不受 `Content-Type` 缺 charset 影响。
+
 ## 开发者安装
 
 ```bash

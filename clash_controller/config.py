@@ -31,9 +31,13 @@ def _load_json(path: Path, log: Callable[[str], None]) -> list:
     if not path.exists():
         return []
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
+        raw = path.read_bytes()
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            text = raw.decode("utf-16")
+        else:
+            text = raw.decode("utf-8-sig")
+        data = json.loads(text)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         log(f"无法读取或解析配置文件 {path}: {e}")
         return []
     return data if isinstance(data, list) else []
@@ -41,7 +45,7 @@ def _load_json(path: Path, log: Callable[[str], None]) -> list:
 
 def _save_json(path: Path, data: list) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
     return path
 

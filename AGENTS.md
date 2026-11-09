@@ -234,10 +234,11 @@ clash_controller/
   main.py / __main__.py   入口：argparse(-D/--dir, --debug, --version) + App().run()
   app.py                  ClashControllerApp：档案/客户端缓存、状态栏、日志、report()
   config.py               profiles.json / config_providers.json 读写（纯数据）
-  api.py                  ClashAPI（(result, error) 契约）+ interpret_api_result / interpret_delay_result
+  api.py                  ClashAPI（(result, error) 契约）+ _decode_body / _parse_body + interpret_api_result / interpret_delay_result
   proxies.py              策略组 / 节点 / provider 归一化（纯数据，零 Textual 依赖）
   ssh.py                  SSH / 本地文件部署服务层
   deploy.py               provider 拉取、当前配置读取、更新决策
+  platform_utils.py       本地路径展开、Clash 配置目录探测、Windows UAC 提权写入
   ui.py                   界面骨架：PageScreen / logo 常量（8.x 特性集中在这里）
   widgets.py              模态 + 表格与模糊筛选辅助（比 aliyun 多 textarea 字段）
   app.tcss                全局样式（模态三段式、顶栏、kv-row、home banner、状态栏）
@@ -284,6 +285,10 @@ clash_controller/
 - `unix://` 端点支持在 `ClashAPI.__init__` 内处理（`removeprefix("unix://")` + URL 编码）。
 - `InquirerPy` 已移除、未使用的 `scp` 已从依赖移除，均勿引入。
 - 部署链路（fetch/apply）在测试中 monkeypatch `screens.config` 模块内的函数名，避免真实网络与 sudo。
+- 订阅与本地配置的编码：**不要用 `response.text`**（requests 对无 charset 的 `text/*` 强制 ISO-8859-1，中文必乱码）。统一走 `deploy.decode_config_bytes`（UTF-16 BOM → UTF-8-sig → GB18030）与 `canonical_config_bytes`（UTF-8 无 BOM、LF 换行）；哈希必须基于规范化后的字节，否则 Windows 的 CRLF/BOM 会让每次部署都误判「内容不同」。SSH `cat` 配置必须走 `run_ssh_command_bytes`，不要 decode 后重新编码。
+- `api.py` 的响应体同理不用 `response.text` / `response.json()`，一律走 `_decode_body`（UTF-8-sig → GB18030 → UTF-8 replace）与 `_parse_body`（先 JSON 后文本）：反向代理把 `Content-Type` 改成无 charset 的 `text/*` 时，中文节点名不会乱码。dict 注入 `status_code`、非 dict 包成 `{"body": ..., "status_code": ...}`，ReadTimeout 重试分支与主分支保持同一契约（否则少 `status_code` 会让 `interpret_*` 误判）。
+- Windows 本地部署：`use_sudo` 字段保留原名（旧档案兼容），含义在界面上显示为「管理员写入 (UAC)」。`apply_local_config_file` 先按当前用户原子写入（临时文件 + `os.replace`，保留 POSIX 文件权限），只有 `PermissionError` 且开启该开关时才由 `platform_utils._elevated_write` 通过 `ShellExecuteW("runas")` 启动隐藏 PowerShell 助手：路径以 Base64 传入（避免中文/空格/引号），脚本用 `[IO.File]::Replace` 覆盖以保留目标 ACL 并生成 `.bak`，结果经临时状态文件回传。UAC 取消、文件被占用（WinError 32）、无权限都有独立中文提示；不要在 Windows 上调用 `sudo`（Win10 没有，Win11 默认关闭且 `forceNewWindow` 不转发 stdin）。
+- Windows 的 Clash 配置目录默认从 `%USERPROFILE%\.config\clash` / `.config\mihomo` 探测（`platform_utils.default_local_config_dir`）；`config_directory` 支持 `~`、`%VAR%`、`$VAR%` 并转为绝对路径。
 - 本地 API 极快，加载反馈容易「看不见」：概览覆盖层**由 worker 自己置位/撤下**（不要在 `on_mount` 里同步预置，否则 worker 早退时覆盖层无人撤下会永久卡住），并在 worker `finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS=0.3`）保证可感；撤下覆盖后必须 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
 - 覆盖层 `ProgressCover.render()` 返回 `_IndeterminateBar`（实现 `__rich_console__`，按 `options.max_width` 绘制时取宽）：**不能读 `self.size`**，覆盖层不参与常规布局，首帧 `_size` 可能为 0 而画出隐形条（历史事故：概览只剩空白方框、看不到进度条）。
 - 概览页离开时 worker 会被取消，父链会先于 `is_mounted` 复位被摘掉，`finally` 里写 `table.loading` / `table.focus()` 会抛 `NoScreen`（历史事故：在覆盖层 `hold_busy` 期间按 Esc 离开概览，整个应用报错退出）。统一用 `overview._attached(widget)`（判定 `widget.screen` 可达）再撤覆盖层 / 移焦点，`is_mounted` 救不了这个场景（见第一部分 §12）。
@@ -299,7 +304,7 @@ clash_controller/
 
 ## 验证（本项目脚本）
 
-- `/tmp/opencode/clash_check.py`（纯逻辑 + 基础挂载）、`/tmp/opencode/clash_ui_check.py`（55 断言：根屏/单击连接与双击部署/Ctrl 键位/模态紧凑/switch/浮层菜单/Esc 层级/流式面板/窄终端 44 列）、`/tmp/opencode/clash_loading_check.py`（11 断言：概览覆盖层/轮询不闪/设置就地忙碌态）、`/tmp/opencode/overview_filter_check.py`（概览筛选/排序/列宽）、`/tmp/opencode/nodes_check.py`（节点页：归一化逻辑、组下拉与隐藏组、延迟/失败/未测、排序沉底、搜索、指定/恢复自动、provider 作用域测速、整组确认与 504、列宽与单滚动条、120×40 + 80×24），可作新脚本模板。
+- `/tmp/opencode/clash_check.py`（纯逻辑 + 基础挂载）、`/tmp/opencode/clash_ui_check.py`（55 断言：根屏/单击连接与双击部署/Ctrl 键位/模态紧凑/switch/浮层菜单/Esc 层级/流式面板/窄终端 44 列）、`/tmp/opencode/clash_loading_check.py`（11 断言：概览覆盖层/轮询不闪/设置就地忙碌态）、`/tmp/opencode/overview_filter_check.py`（概览筛选/排序/列宽）、`/tmp/opencode/nodes_check.py`（节点页：归一化逻辑、组下拉与隐藏组、延迟/失败/未测、排序沉底、搜索、指定/恢复自动、provider 作用域测速、整组确认与 504、列宽与单滚动条、120×40 + 80×24）、`/tmp/opencode/encoding_uac_check.py`（订阅编码矩阵 UTF-8/GBK/UTF-16/BOM/CRLF、哈希稳定、原子写入与备份、只读目录报错、UAC 脚本路径 Base64、profiles.json BOM/UTF-16）、`/tmp/opencode/deploy_flow_check.py`（ConfigScreen 拉取→比对→部署→重载全链路，monkeypatch 服务层）、`/tmp/opencode/api_encoding_check.py`（ClashAPI 响应体：text/plain 无 charset / GBK / 非 JSON / 空体 / debug 日志的中文不乱码与返回契约）、`/tmp/opencode/profile_form_check.py`（Windows 文案下端点表单：标签 16 列不超宽、长提示完整换行、窄屏可滚动、_collect 校验），可作新脚本模板。
 - 做法：`CLASH_CONTROLLER_CONFIG_DIR` 指向临时目录并写 `profiles.json` / `config_providers.json`；`app.get_api = lambda: FakeAPI()` 屏蔽网络；FakeAPI 要带状态（`toggle_tun`/`set_mode` 改变 `get_configs` 返回值）。
 
 ## 提交

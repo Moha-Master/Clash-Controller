@@ -13,6 +13,7 @@ from .. import __version__
 from ..api import interpret_connect_result
 from ..config import load_profiles, save_profiles
 from ..deploy import default_endpoint_type
+from ..platform_utils import IS_WINDOWS, default_local_config_dir
 from ..ui import LOGO_WIDTH, home_col_width, logo_text
 from ..widgets import ConfirmModal, FormField, FormModal, HintBar, MenuMarquee, busy, hold_busy
 
@@ -39,7 +40,7 @@ def build_profile(data: dict, ssh: dict | None = None) -> dict:
         "url": data["url"].strip(),
         "secret": data.get("secret", ""),
         "endpoint_type": data["endpoint_type"],
-        "config_directory": data["config_directory"].strip() or "/etc/clash",
+        "config_directory": data["config_directory"].strip() or default_local_config_dir(),
         "use_sudo": bool(data["use_sudo"]),
         "debug_ssh": bool(data["debug_ssh"]),
         "ssh": ssh,
@@ -75,6 +76,15 @@ def build_ssh(data: dict) -> dict:
 def _basic_fields(existing: dict | None) -> list:
     existing = existing or {}
     url = existing.get("url", "")
+    config_dir_default = default_local_config_dir()
+    if IS_WINDOWS:
+        config_dir_hint = "Clash 核心的 config.yaml 所在目录；受 UAC 保护的目录会在部署时请求管理员授权"
+        elevation_label = "管理员写入 (UAC)"
+        elevation_hint = "写入 Program Files / ProgramData 等受保护目录时弹出 UAC"
+    else:
+        config_dir_hint = "Clash 核心的配置目录（config.yaml 所在目录）"
+        elevation_label = "使用 sudo"
+        elevation_hint = ""
     return [
         FormField(
             "url", "控制端点", value=url,
@@ -98,13 +108,14 @@ def _basic_fields(existing: dict | None) -> list:
         ),
         FormField(
             "config_directory", "配置目录",
-            value=existing.get("config_directory", "/etc/clash"),
+            value=existing.get("config_directory") or config_dir_default,
             validator=lambda v: bool(v.strip()), error="不能为空",
-            hint="Clash 核心的配置目录（config.yaml 所在目录）",
+            hint=config_dir_hint,
         ),
         FormField(
-            "use_sudo", "使用 sudo", kind="switch",
+            "use_sudo", elevation_label, kind="switch",
             value="on" if existing.get("use_sudo", True) else "",
+            hint=elevation_hint,
         ),
         FormField(
             "debug_ssh", "SSH 调试日志", kind="switch",

@@ -11,6 +11,13 @@ from collections.abc import Callable
 
 import paramiko
 
+from .platform_utils import (
+    IS_WINDOWS,
+    default_local_config_dir,
+    expand_local_path,
+    write_local_config,
+)
+
 
 def _noop(_message: str) -> None:
     pass
@@ -93,9 +100,19 @@ def connect_ssh(profile: dict, log: Callable[[str], None] = _noop, debug: bool =
 
 def run_ssh_command(ssh_client, command: str):
     stdin, stdout, stderr = ssh_client.exec_command(command)
-    code = stdout.channel.recv_exit_status()
+    # 先读完输出再取退出码：否则大输出会把 channel 窗口写满而死锁。
     out = stdout.read().decode('utf-8', errors='replace')
     err = stderr.read().decode('utf-8', errors='replace')
+    code = stdout.channel.recv_exit_status()
+    return code, out, err
+
+
+def run_ssh_command_bytes(ssh_client, command: str):
+    """执行命令并按原始字节返回 stdout（用于读取配置文件，避免解码改写内容）。"""
+    stdin, stdout, stderr = ssh_client.exec_command(command)
+    out = stdout.read()
+    err = stderr.read().decode('utf-8', errors='replace')
+    code = stdout.channel.recv_exit_status()
     return code, out, err
 
 
@@ -108,14 +125,14 @@ def run_ssh_command_with_input(ssh_client, command: str, input_text: str):
         stdin.channel.shutdown_write()
     except Exception:
         pass
-    code = stdout.channel.recv_exit_status()
     out = stdout.read().decode('utf-8', errors='replace')
     err = stderr.read().decode('utf-8', errors='replace')
+    code = stdout.channel.recv_exit_status()
     return code, out, err
 
 
 def _remote_paths(profile: dict) -> tuple[str, str, bool]:
-    config_dir = profile.get('config_directory', '/etc/clash')
+    config_dir = profile.get('config_directory') or '/etc/clash'
     config_path = posixpath.join(config_dir, 'config.yaml')
     ssh_cfg = profile.get('ssh') or {}
     ssh_user = str(ssh_cfg.get('username', 'root')).strip()
@@ -147,10 +164,10 @@ def fetch_remote_file_meta_and_content(
         cat_cmd = f"{sudo_prefix}cat -- {config_path}"
         if debug:
             log(f"[DEBUG][SSH] cat_cmd={cat_cmd}")
-        code, out, err = run_ssh_command(ssh, cat_cmd)
+        code, raw, err = run_ssh_command_bytes(ssh, cat_cmd)
         if code != 0:
-            raise RuntimeError(f"failed to read remote config: {err.strip() or out.strip()}")
-        return remote_mtime, out.encode('utf-8')
+            raise RuntimeError(f"failed to read remote config: {err.strip()}")
+        return remote_mtime, raw
     finally:
         ssh.close()
 
@@ -184,33 +201,62 @@ def apply_remote_config_via_ssh(
         ssh.close()
 
 
-def apply_local_config_file(profile: dict, payload_text: str) -> None:
-    """备份并覆写本地 config.yaml（必要时使用 sudo）。"""
-    config_dir = profile.get('config_directory', '/etc/clash')
+def apply_local_config_file(
+    profile: dict,
+    payload_text: str,
+    log: Callable[[str], None] = _noop,
+) -> None:
+    """备份并覆写本地 config.yaml。
+
+    Windows：先按当前权限原子写入，受 UAC 保护的目录再弹出授权（需要档案开启
+    ``use_sudo``，界面显示为“管理员写入 (UAC)”）。
+    POSIX：保持原有 sudo 行为（``use_sudo``）。
+    """
+    config_dir = expand_local_path(profile.get('config_directory') or default_local_config_dir())
     config_path = os.path.join(config_dir, 'config.yaml')
     bak_path = os.path.join(config_dir, 'config.yaml.bak')
-    use_sudo = bool(profile.get('use_sudo', True))
+    use_elevation = bool(profile.get('use_sudo', True))
+    payload = payload_text.encode('utf-8')
 
-    if use_sudo:
-        backup = subprocess.run(
-            ['sudo', 'cp', config_path, bak_path], capture_output=True, text=True
+    if IS_WINDOWS:
+        write_local_config(
+            config_dir,
+            config_path,
+            bak_path,
+            payload,
+            allow_elevation=use_elevation,
+            log=log,
         )
-        if backup.returncode != 0:
-            raise RuntimeError(
-                f"failed to backup local config with sudo: {(backup.stderr or backup.stdout).strip()}"
-            )
-
-        replace = subprocess.run(
-            ['sudo', 'tee', config_path], input=payload_text, capture_output=True, text=True
-        )
-        if replace.returncode != 0:
-            raise RuntimeError(
-                f"failed to replace local config with sudo: {(replace.stderr or replace.stdout).strip()}"
-            )
         return
 
-    os.makedirs(config_dir, exist_ok=True)
-    if os.path.exists(config_path):
-        os.replace(config_path, bak_path)
-    with open(config_path, 'w', encoding='utf-8') as f:
-        f.write(payload_text)
+    if use_elevation:
+        _apply_local_config_with_sudo(config_path, bak_path, payload)
+        return
+
+    try:
+        write_local_config(
+            config_dir,
+            config_path,
+            bak_path,
+            payload,
+            allow_elevation=False,
+            log=log,
+        )
+    except PermissionError as exc:
+        raise RuntimeError(f"没有权限写入本地配置 {config_path}: {exc}") from exc
+
+
+def _apply_local_config_with_sudo(config_path: str, bak_path: str, payload: bytes) -> None:
+    backup = subprocess.run(['sudo', 'cp', '--', config_path, bak_path], capture_output=True)
+    if backup.returncode != 0:
+        raise RuntimeError(f"failed to backup local config with sudo: {_describe_command(backup)}")
+
+    # 用 bytes 作为 stdin，避免 Windows/非 UTF-8 locale 下的文本模式编码问题。
+    replace = subprocess.run(['sudo', 'tee', '--', config_path], input=payload, capture_output=True)
+    if replace.returncode != 0:
+        raise RuntimeError(f"failed to replace local config with sudo: {_describe_command(replace)}")
+
+
+def _describe_command(completed: subprocess.CompletedProcess) -> str:
+    raw = completed.stderr or completed.stdout or b''
+    return raw.decode('utf-8', errors='replace').strip()

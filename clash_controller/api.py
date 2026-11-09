@@ -1,10 +1,37 @@
+import json
 from urllib.parse import quote
 
 import requests
 
+BODY_ENCODINGS = ("utf-8-sig", "gb18030")
+
 
 def _noop(_message: str) -> None:
     pass
+
+
+def _decode_body(response) -> str:
+    """按字节显式解码响应体。
+
+    不要直接用 ``response.text``：中间层（反向代理 / CDN）可能把 Content-Type 改成
+    没有 charset 的 ``text/*``，requests 会强制按 ISO-8859-1 解码，中文节点名直接乱码。
+    """
+    data = response.content or b""
+    for encoding in BODY_ENCODINGS:
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _parse_body(response):
+    """解析响应体：优先按 JSON，失败则退回解码后的文本。"""
+    text = _decode_body(response)
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
 
 
 class ClashAPI:
@@ -105,13 +132,10 @@ class ClashAPI:
                 return {"status": "success", "status_code": response.status_code}, None
 
             # Try JSON first, fall back to text
-            try:
-                parsed = response.json()
-            except Exception:
-                parsed = response.text
+            parsed = _parse_body(response)
 
             if self.debug:
-                raw = (response.text or '')[:4096]
+                raw = _decode_body(response)[:4096]
                 self._log(f"[DEBUG] Response: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
 
             # If the parsed result is a dict, inject status_code for caller convenience
@@ -147,9 +171,13 @@ class ClashAPI:
                     return {"status": "success"}, None
 
                 if self.debug:
-                    raw = response.text[:4096]
+                    raw = _decode_body(response)[:4096]
                     self._log(f"[DEBUG] Response after retry: status={response.status_code} headers={dict(response.headers)} body(<=4k)={raw}")
-                return response.json(), None
+                parsed = _parse_body(response)
+                if isinstance(parsed, dict):
+                    parsed.setdefault('status_code', response.status_code)
+                    return parsed, None
+                return {"body": parsed, "status_code": response.status_code}, None
 
             except requests.exceptions.RequestException as exc:
                 if self.debug:
@@ -182,16 +210,13 @@ class ClashAPI:
             resp = getattr(e, 'response', None)
             if resp is not None:
                 try:
-                    body = resp.json()
+                    body = _parse_body(resp)
                 except Exception:
-                    try:
-                        body = resp.text
-                    except Exception:
-                        body = ''
+                    body = ''
 
                 if self.debug:
                     try:
-                        self._log(f"[DEBUG] Error Response: status={resp.status_code} headers={dict(resp.headers)} body(<=4k)={(resp.text or '')[:4096]}")
+                        self._log(f"[DEBUG] Error Response: status={resp.status_code} headers={dict(resp.headers)} body(<=4k)={_decode_body(resp)[:4096]}")
                     except Exception:
                         self._log(f"[DEBUG] Error Response: status={getattr(resp, 'status_code', 'unknown')}")
 
