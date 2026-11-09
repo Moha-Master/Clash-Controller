@@ -71,8 +71,10 @@ clashctl --debug                  # 启用 API / SSH 调试日志（显示在应
 
 ## Windows 说明
 
-- Clash 配置目录默认从 `%USERPROFILE%\.config\clash` / `%USERPROFILE%\.config\mihomo` 探测，也可在端点里手动填写。
-- 若配置目录位于 `Program Files`、`ProgramData` 等受保护位置，部署时会弹出 UAC 请求管理员写入；请在端点设置中保持“管理员写入 (UAC)”开启。
+- Clash 配置目录默认从 `%USERPROFILE%\.config\clash` / `%USERPROFILE%\.config\mihomo` 探测，也可在端点里手动填写（支持 `~`、`%VAR%`）。
+- 若配置目录位于 `Program Files`、`ProgramData` 等受保护位置，部署时会弹出 UAC 请求管理员写入；请在端点设置中保持“管理员写入 (UAC)”开启，并在弹出的对话框中点击“是”。提权后由程序自身的管理员进程完成写入（不借助 PowerShell，避免被安全软件当成攻击行为掐掉）。部署界面会显示当前阶段（请求授权 / 已授权正在写入），详情同时写入“应用日志”页。
+- 写入是否成功以 `config.yaml` 的实际内容为准：只要目标文件已替换为拉取到的配置就判定成功，不会因提权进程未回写确认文件而误报“等待 UAC 超时”。替换走系统 `ReplaceFileW`，会保留 `config.yaml` 原有的访问权限（ACL），原配置备份为同目录的 `config.yaml.bak`。
+- 如果当前进程已经是管理员权限、或账户不属于管理员组，程序不会白弹 UAC，而是直接说明真正的原因（只读属性 / ACL 拒绝 / 文件被占用，或建议把配置目录放到用户目录）。
 - 订阅与本地配置会按 UTF-8 / GB18030 / 带 BOM 的 UTF-16 自动识别，并统一以 UTF-8（无 BOM、LF 换行）写入，不会再把中文变成乱码；控制 API 响应体同样按字节解码，中文节点名不受 `Content-Type` 缺 charset 影响。
 
 ## 开发者安装

@@ -1,6 +1,7 @@
 """配置管理屏：配置提供方的增删改，以及拉取 / 比对 / 部署 / 重载流程。"""
 import asyncio
 import time
+from collections.abc import Callable
 
 from rich.text import Text
 from textual import on, work
@@ -199,6 +200,23 @@ class ConfigScreen(PageScreen):
             return
         self._deploy(provider)
 
+    def _deploy_logger(self, ov) -> Callable[[str], None]:
+        """部署期间的日志回调：写应用日志页，并把 UAC 阶段同步到忙碌遮罩标题。
+
+        提权写入跑在 `asyncio.to_thread` 里，回调来自工作线程，因此更新控件必须
+        `call_from_thread`；遮罩可能已经撤下，异常一律吞掉（失败原因仍会作为异常抛出）。
+        """
+
+        def _log(message: str) -> None:
+            self.app.add_log(message)
+            if message.startswith("[UAC]"):
+                try:
+                    self.app.call_from_thread(ov.set_message, message.removeprefix("[UAC]").strip())
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return _log
+
     @work(exclusive=True)
     async def _deploy(self, provider: dict) -> None:
         profile = self.app.profile or {}
@@ -251,7 +269,7 @@ class ConfigScreen(PageScreen):
                 else:
                     self.app.add_log("Deploying config to local endpoint file.")
                     await asyncio.to_thread(
-                        apply_local_config_file, profile, remote_payload, self.app.add_log
+                        apply_local_config_file, profile, remote_payload, self._deploy_logger(ov)
                     )
             except Exception as e:  # noqa: BLE001
                 self.app.notify_err(f"部署配置失败: {type(e).__name__}: {e}")

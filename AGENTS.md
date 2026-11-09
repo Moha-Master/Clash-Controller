@@ -238,7 +238,8 @@ clash_controller/
   proxies.py              策略组 / 节点 / provider 归一化（纯数据，零 Textual 依赖）
   ssh.py                  SSH / 本地文件部署服务层
   deploy.py               provider 拉取、当前配置读取、更新决策
-  platform_utils.py       本地路径展开、Clash 配置目录探测、Windows UAC 提权写入
+  platform_utils.py       本地路径展开、Clash 配置目录探测、UAC 令牌状态判定、Windows 提权写入
+  elevated_helper.py      提权进程入口：以管理员令牌执行「读 payload → 原子写目标 → 回写状态」
   ui.py                   界面骨架：PageScreen / logo 常量（8.x 特性集中在这里）
   widgets.py              模态 + 表格与模糊筛选辅助（比 aliyun 多 textarea 字段）
   app.tcss                全局样式（模态三段式、顶栏、kv-row、home banner、状态栏）
@@ -287,7 +288,14 @@ clash_controller/
 - 部署链路（fetch/apply）在测试中 monkeypatch `screens.config` 模块内的函数名，避免真实网络与 sudo。
 - 订阅与本地配置的编码：**不要用 `response.text`**（requests 对无 charset 的 `text/*` 强制 ISO-8859-1，中文必乱码）。统一走 `deploy.decode_config_bytes`（UTF-16 BOM → UTF-8-sig → GB18030）与 `canonical_config_bytes`（UTF-8 无 BOM、LF 换行）；哈希必须基于规范化后的字节，否则 Windows 的 CRLF/BOM 会让每次部署都误判「内容不同」。SSH `cat` 配置必须走 `run_ssh_command_bytes`，不要 decode 后重新编码。
 - `api.py` 的响应体同理不用 `response.text` / `response.json()`，一律走 `_decode_body`（UTF-8-sig → GB18030 → UTF-8 replace）与 `_parse_body`（先 JSON 后文本）：反向代理把 `Content-Type` 改成无 charset 的 `text/*` 时，中文节点名不会乱码。dict 注入 `status_code`、非 dict 包成 `{"body": ..., "status_code": ...}`，ReadTimeout 重试分支与主分支保持同一契约（否则少 `status_code` 会让 `interpret_*` 误判）。
-- Windows 本地部署：`use_sudo` 字段保留原名（旧档案兼容），含义在界面上显示为「管理员写入 (UAC)」。`apply_local_config_file` 先按当前用户原子写入（临时文件 + `os.replace`，保留 POSIX 文件权限），只有 `PermissionError` 且开启该开关时才由 `platform_utils._elevated_write` 通过 `ShellExecuteW("runas")` 启动隐藏 PowerShell 助手：路径以 Base64 传入（避免中文/空格/引号），脚本用 `[IO.File]::Replace` 覆盖以保留目标 ACL 并生成 `.bak`，结果经临时状态文件回传。UAC 取消、文件被占用（WinError 32）、无权限都有独立中文提示；不要在 Windows 上调用 `sudo`（Win10 没有，Win11 默认关闭且 `forceNewWindow` 不转发 stdin）。
+- Windows 本地部署：`use_sudo` 字段保留原名（旧档案兼容），含义在界面上显示为「管理员写入 (UAC)」。`apply_local_config_file` 先按当前用户原子写入，只有真出现权限类失败才由 `platform_utils._elevated_write` 用 `ShellExecuteExW("runas")` **以管理员令牌再启动一个我们自己的 Python**（`python -m clash_controller.elevated_helper <payload> <target> <backup> <status>`；frozen 时由入口的 `--elevated-write` 分派），helper 只做「读 payload → 原子写目标 → 回写状态」，与 POSIX 复用同一份 `_write_atomic`。
+- **不要用 PowerShell 当提权 helper**（历史版本如此，已废弃）：`-NoProfile -NonInteractive -EncodedCommand <base64>` + 隐藏窗口是终端安全软件的重点特征（MITRE T1059.001 一类的 Sigma 规则命中“多个隐藏/绕过开关组合”+ base64 脚本块），可能被允许启动却在最后一步掐掉，表现出「文件已替换、回执没写出来」的怪状态；`python.exe → python.exe` 则是正常父子基线。同理 `IFileOperation` COM 虽是原生做法，但要引入 comtypes/pywin32，且本身是已知 UAC 绕过面。
+- **提权写入的成败判定以磁盘内容为准**（历史事故：config.yaml 已被成功替换，但状态文件没写出来，旧实现把「已成功」误报成「等待 UAC 超时」）。`_await_elevation` 三个信号：① `_target_outcome(config, payload) == match` 直接判成功；② 状态文件 `OK` / `ERR 原因`（helper 的 `write_status` 自带 3 次重试，失败也不影响主判定）；③ `SEE_MASK_NOCLOSEPROCESS` 拿到的进程句柄 —— 句柄 signaled 后仍未 match 就按 helper 退出码报错，绝不空等超时。必须带 `SEE_MASK_NOASYNC`，否则 ShellExecuteEx 会在用户还没点“是”时就返回，超时计时从弹框之前开始算（副作用：授权阶段同步阻塞 worker，UI 线程不受影响、Ctrl+Q 可退出）。
+- 提权前先看令牌：`elevation_state()` 用 `GetTokenInformation(TokenElevationType=18 / TokenElevation=20)` 分四态（`possible` / `already` / `not_admin` / `unknown`）。只有 `possible`（管理员账户 + UAC 过滤令牌）才值得弹框；`already` 说明失败根本不是权限问题（只读属性 / ACL 显式拒绝 / 文件占用），`not_admin` 说明本机没有可提权的令牌 —— 两者都直接给出可操作的说明，不要白弹。读不到时按 `possible` 兜底尝试。
+- Windows 发布目标文件用 `ReplaceFileW(replaced, replacement, backup, 0, NULL, NULL)`：它是同卷事务且保留目标的 DACL/创建时间；`os.replace` 底层是 `MoveFileExW`，**会把目标 ACL 换成临时文件的继承值**（正主 bug，别退回旧写法）。错误码 5 → `ConfigWriteRefused(denied)`、32/33 → `occupied`（触发重试），1175/1176/1177 等退回 `copy2 + os.replace` 并写日志。拒绝/占用一律用显式的 `ConfigWriteRefused`，**不要靠 `PermissionError.winerror`** —— 该属性只在 Windows 存在，开发机上根本测不到。
+- UAC 阶段反馈：`platform_utils` 用 `[UAC] ` 前缀回调日志，`ConfigScreen._deploy_logger(ov)` 一路写 `add_log`、一路 `call_from_thread(ov.set_message, ...)` 把阶段文案显示到忙碌遮罩标题（去掉前缀；非 `[UAC]` 的行只进日志页）。回调来自 `asyncio.to_thread` 的工作线程，直接改控件会炸。
+- `ctypes` 里的 DWORD/ULONG/枚举一律写 `c_uint32`：`c_ulong` 在 Linux 是 8 字节，会让 `SHELLEXECUTEINFOW` 布局与 Windows 不一致（x64 应为 sizeof=112、`hProcess` 偏移 104，用 c_uint32 后开发机上也能断言字段偏移）。
+- Windows 上不要用 `sudo`（Win10 没有，Win11 默认关闭且 `forceNewWindow` 不转发 stdin）；UAC 取消（WinError 1223 / SE_ERR_ACCESSDENIED）、文件被占用、非管理员账户都有独立中文提示。
 - Windows 的 Clash 配置目录默认从 `%USERPROFILE%\.config\clash` / `.config\mihomo` 探测（`platform_utils.default_local_config_dir`）；`config_directory` 支持 `~`、`%VAR%`、`$VAR%` 并转为绝对路径。
 - 本地 API 极快，加载反馈容易「看不见」：概览覆盖层**由 worker 自己置位/撤下**（不要在 `on_mount` 里同步预置，否则 worker 早退时覆盖层无人撤下会永久卡住），并在 worker `finally` 里 `await hold_busy(started)`（`BUSY_MIN_SECONDS=0.3`）保证可感；撤下覆盖后必须 `self.call_after_refresh(self._refit)` 按最终宽度重排，否则列宽按旧宽度算、无法铺满。
 - 覆盖层 `ProgressCover.render()` 返回 `_IndeterminateBar`（实现 `__rich_console__`，按 `options.max_width` 绘制时取宽）：**不能读 `self.size`**，覆盖层不参与常规布局，首帧 `_size` 可能为 0 而画出隐形条（历史事故：概览只剩空白方框、看不到进度条）。
@@ -304,7 +312,7 @@ clash_controller/
 
 ## 验证（本项目脚本）
 
-- `/tmp/opencode/clash_check.py`（纯逻辑 + 基础挂载）、`/tmp/opencode/clash_ui_check.py`（55 断言：根屏/单击连接与双击部署/Ctrl 键位/模态紧凑/switch/浮层菜单/Esc 层级/流式面板/窄终端 44 列）、`/tmp/opencode/clash_loading_check.py`（11 断言：概览覆盖层/轮询不闪/设置就地忙碌态）、`/tmp/opencode/overview_filter_check.py`（概览筛选/排序/列宽）、`/tmp/opencode/nodes_check.py`（节点页：归一化逻辑、组下拉与隐藏组、延迟/失败/未测、排序沉底、搜索、指定/恢复自动、provider 作用域测速、整组确认与 504、列宽与单滚动条、120×40 + 80×24）、`/tmp/opencode/encoding_uac_check.py`（订阅编码矩阵 UTF-8/GBK/UTF-16/BOM/CRLF、哈希稳定、原子写入与备份、只读目录报错、UAC 脚本路径 Base64、profiles.json BOM/UTF-16）、`/tmp/opencode/deploy_flow_check.py`（ConfigScreen 拉取→比对→部署→重载全链路，monkeypatch 服务层）、`/tmp/opencode/api_encoding_check.py`（ClashAPI 响应体：text/plain 无 charset / GBK / 非 JSON / 空体 / debug 日志的中文不乱码与返回契约）、`/tmp/opencode/profile_form_check.py`（Windows 文案下端点表单：标签 16 列不超宽、长提示完整换行、窄屏可滚动、_collect 校验），可作新脚本模板。
+- `/tmp/opencode/clash_check.py`（纯逻辑 + 基础挂载）、`/tmp/opencode/clash_ui_check.py`（55 断言：根屏/单击连接与双击部署/Ctrl 键位/模态紧凑/switch/浮层菜单/Esc 层级/流式面板/窄终端 44 列）、`/tmp/opencode/clash_loading_check.py`（11 断言：概览覆盖层/轮询不闪/设置就地忙碌态）、`/tmp/opencode/overview_filter_check.py`（概览筛选/排序/列宽）、`/tmp/opencode/nodes_check.py`（节点页：归一化逻辑、组下拉与隐藏组、延迟/失败/未测、排序沉底、搜索、指定/恢复自动、provider 作用域测速、整组确认与 504、列宽与单滚动条、120×40 + 80×24）、`/tmp/opencode/encoding_uac_check.py`（订阅编码矩阵 UTF-8/GBK/UTF-16/BOM/CRLF、哈希稳定、原子写入与备份、只读目录报错、helper 对含中文空格路径的 argv 往返、profiles.json BOM/UTF-16）、`/tmp/opencode/deploy_flow_check.py`（ConfigScreen 拉取→比对→部署→重载全链路，monkeypatch 服务层）、`/tmp/opencode/api_encoding_check.py`（ClashAPI 响应体：text/plain 无 charset / GBK / 非 JSON / 空体 / debug 日志的中文不乱码与返回契约）、`/tmp/opencode/profile_form_check.py`（Windows 文案下端点表单：标签 16 列不超宽、长提示完整换行、窄屏可滚动、_collect 校验）、`/tmp/opencode/uac_wait_check.py`（提权链路 17 项：无状态文件但内容已更新须判成功、ERR 透传、句柄退出即快速失败、退出码非 0 提示拦截、提权命令行不含 PowerShell/base64 特征、令牌四态与降级、write_local_config 决策表、ReplaceFileW 参数顺序与 5/32/1176 三类失败分支、write_status 容错、helper 入口带回可读原因、ShellExecuteEx 封装分支、SHELLEXECUTEINFOW 字段偏移）、`/tmp/opencode/uac_overlay_check.py`（UAC 阶段文案经 worker 线程回调同步到忙碌遮罩标题、非 UAC 日志只进日志页），可作新脚本模板。
 - 做法：`CLASH_CONTROLLER_CONFIG_DIR` 指向临时目录并写 `profiles.json` / `config_providers.json`；`app.get_api = lambda: FakeAPI()` 屏蔽网络；FakeAPI 要带状态（`toggle_tun`/`set_mode` 改变 `get_configs` 返回值）。
 
 ## 提交
